@@ -1,0 +1,29 @@
+# One brand. The whole project is that brand's report; the functions guard it.
+[build]
+  publish = "public"
+
+# The page rewrites its address to /b/<slug> so the brand is in the address
+# bar; a refresh then asks the server for that path, and it must answer with
+# the same page rather than a 404.
+[[redirects]]
+  from = "/b/*"
+  to = "/index.html"
+  status = 200
+
+[functions]
+  directory = "netlify/functions"
+  node_bundler = "esbuild"
+
+# The report file is replaced by saving, not by deploying, so it must never
+# be served from a stale cache.
+[[headers]]
+  for = "/index.html"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    X-Frame-Options = "DENY"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "no-referrer"
