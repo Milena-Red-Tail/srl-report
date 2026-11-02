@@ -7036,7 +7036,8 @@ function asinPlanFor(ds, asin, from, to) {
 function planFor(ds, from, to) {
   const plan = ds.plan || {};
   if (!Object.keys(plan).length && !Object.keys(ds.planAsin || {}).length) return null;
-  let sales = 0, spend = 0, covered = 0, spendDays = 0, days = 0, byAsinDays = 0;
+  let sales = 0, spend = 0, covered = 0, spendDays = 0, days = 0, byAsinDays = 0, dsp = 0, dspDays = 0;
+  const dspNo = [];
   const d = fromKey(from), end = fromKey(to);
   while (d <= end) {
     const rec = monthPlan(ds, d.getFullYear() + '-' + MONTHS[d.getMonth()]);
@@ -7049,7 +7050,16 @@ function planFor(ds, from, to) {
          the days that actually name a spend keeps "no ad plan written" apart
          from "the plan is to spend nothing" — the first is a blank tile, the
          second is a real target of zero. */
-      if (rec.planSpend != null) spendDays++;
+      if (rec.planSpend != null) {
+        spendDays++;
+        /* DSP is in the actual Ad spend, so it goes into the budget too — the
+           amount typed for the month, shared over its days; a month with none
+           typed adds nothing (Milena, Nov 2026) */
+        const mk = d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0');
+        const dv = ds.dsp && ds.dsp[mk] != null ? +ds.dsp[mk] : null;
+        if (dv != null && isFinite(dv)) { spend += dv / inMonth; dsp += dv / inMonth; dspDays++; }
+        else if (dspNo.indexOf(mk) < 0) dspNo.push(mk);
+      }
       if (rec.byAsin) byAsinDays++;
       covered++;
     }
@@ -7059,6 +7069,7 @@ function planFor(ds, from, to) {
   /* a range only half covered by plans would otherwise read as a halved target */
   return { sales: sales, spend: spend, days: days, covered: covered,
            spendDays: spendDays, hasSpend: spendDays > 0, byAsinDays: byAsinDays,
+           dsp: dsp, dspDays: dspDays, dspNo: dspNo,
            spendWhole: spendDays === days, whole: covered === days };
 }
 
@@ -9640,7 +9651,8 @@ function paintFreshBar(info) {
  * which is the same rule the month-by-month running totals follow.
  */
 function ytdPlanFor(info) {
-  let sales = 0, spend = 0, covered = 0, spendDays = 0, days = 0, any = false;
+  let sales = 0, spend = 0, covered = 0, spendDays = 0, days = 0, any = false, dsp = 0, dspDays = 0;
+  const dspNo = [];
   const stop = +info.to.slice(5, 7);
   for (let m = 1; m <= stop; m++) {
     const p = periodInfo('month', info.key + '-' + pad2(m));
@@ -9652,10 +9664,11 @@ function ytdPlanFor(info) {
     any = true;
     sales += pl.sales; spend += pl.spend;
     covered += pl.covered; spendDays += pl.spendDays;
+    dsp += pl.dsp || 0; dspDays += pl.dspDays || 0; (pl.dspNo || []).forEach(k => { if (dspNo.indexOf(k) < 0) dspNo.push(k); });
   }
   if (!any) return null;
   return { sales: sales, spend: spend, days: days, covered: covered,
-           spendDays: spendDays, hasSpend: spendDays > 0,
+           spendDays: spendDays, hasSpend: spendDays > 0, dsp: dsp, dspDays: dspDays, dspNo: dspNo,
            spendWhole: spendDays === days, whole: covered === days };
 }
 
@@ -9780,8 +9793,11 @@ function renderKpis(info, cs, rows, prevRows) {
        the spend is heading while the period is still running. */
     if (id === '#planSpend') {
       const plan = wholeOf(planNow(info));
-      const why = 'The advertising budget from the <b>Plan spend</b> column of the plan file, spread evenly over each month\'s days. ' +
-        'The gap is grey: under or over budget can be good or bad.';
+      const why = 'The advertising budget from the <b>Plan spend</b> column of the plan file, spread evenly over each month\'s days, ' +
+        'plus the <b>DSP</b> typed on Upload data for the same months (a month without DSP adds nothing). ' +
+        'The gap is grey: under or over budget can be good or bad.' +
+        (plan && plan.hasSpend ? '<br><br>' + (plan.dsp ? 'DSP in this budget: <b>' + money(plan.dsp) + '</b>.' : 'No DSP in this budget.') +
+          (plan.dspNo && plan.dspNo.length ? ' No DSP typed for ' + plan.dspNo.map(k => MONTHS[+k.slice(5) - 1] + ' ' + k.slice(0, 4)).join(', ') + '.' : '') : '');
       if (!plan || !plan.hasSpend) {
         return tile('Plan ad spend', '—', '',
           plan ? 'no Plan spend column in the plan file' : 'no plan loaded for ' + info.label,
@@ -9804,7 +9820,7 @@ function renderKpis(info, cs, rows, prevRows) {
           money(plan.spend), 0),
         (projS ? 'expected ' + money(against) : money(against) + ' spent') +
           (plan.spendWhole ? '' : ' · plan covers ' + plan.spendDays + ' of ' +
-            plan.days + ' days') + (cur.dsp ? '<br>incl. ' + money(cur.dsp) + ' DSP' : ''),
+            plan.days + ' days') + '<br>' + (plan.dsp ? 'plan incl. ' + money(plan.dsp) + ' DSP' : 'no DSP in plan') + (cur.dsp ? ' · actual incl. ' + money(cur.dsp) : ''),
         why + (plan.spendWhole ? '' :
           '<br><br>The budget covers only <b>' + plan.spendDays + ' of ' + plan.days + ' days</b>.'));
     }
@@ -11142,7 +11158,11 @@ function rowInGroup(r, group) {
   const share = shareInGroup(r, group);
   if (share === 1) return r;
   const out = Object.assign({}, r);
-  GROUP_SCALED.forEach(function (f) {
+  /* every figure that adds up is cut to the share — the same list the group
+     table folds by, so the product rows and the group row agree. Shipped COGS,
+     returns, the plan and last period's revenue were missed before (Nov 2026:
+     Alen's 25i&35i group showed COGS at twice the revenue in Oct) */
+  GROUP_SCALED.concat(typeof GROUP_SUM !== 'undefined' ? GROUP_SUM.filter(f => GROUP_SCALED.indexOf(f) < 0) : []).forEach(function (f) {
     if (typeof out[f] === 'number') out[f] = out[f] * share;
   });
   out._groupShare = share;
@@ -21404,7 +21424,7 @@ const HOWTO = [
           ? '<ol><li>Any day of the month the reading is for.</li><li>Type the four defect rates and the charge each cost, as Vendor Central shows them (Performance → Operational performance, by month), and <b>Add reading</b>.</li></ol>'
           : '<ol><li>The date you read them on Amazon’s Account Health page.</li><li>Type the six figures as Amazon shows them and <b>Add reading</b>. They go into the report and the covering email.</li></ol>' },
       { id: 'data-dsp', t: 'DSP spend, once a month',
-        b: '<ol><li>Pick the month.</li><li>Type what DSP cost that month and <b>Save DSP</b>. It is spread evenly over the month’s days and counts in Ad spend and TACOS — not in ACOS or cost per click, which are the sponsored ads’ own.</li></ol>' },
+        b: '<ol><li>Pick the month.</li><li>Type what DSP cost that month and <b>Save DSP</b>. It is spread evenly over the month’s days and counts in Ad spend, TACOS and Plan ad spend — not in ACOS or cost per click, which are the sponsored ads’ own.</li></ol>' },
       { id: 'data-more', t: 'The rest of the page',
         b: '<ol><li><b>Masthead</b> — the brand’s name, colour and logo on the band at the top.</li>' + (HOWTO_VENDOR ? '' : '<li><b>Inbound cover target</b> — how many days of stock the Inbound report plans for.</li>') + '<li><b>Browse the data</b> — any data the report holds, whole, to look at or download.</li><li><b>What is loaded</b> — every export on file and the days it covers; a file loaded by mistake can be removed here.</li></ol>' },
     ] },
