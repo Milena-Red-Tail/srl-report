@@ -3748,7 +3748,17 @@ function readFeesFile(objs) {
     const asin = String(o[cAsin] || '').trim().toUpperCase();
     if (!/^[A-Z0-9]{8,12}$/.test(asin)) return;
     const raw = cFul ? o[cFul] : null;
-    if (raw == null || String(raw).trim() === '' || !/\d/.test(String(raw))) { need++; return; }
+    if (raw == null || String(raw).trim() === '' || !/\d/.test(String(raw))) {
+      need++;
+      /* a price typed with no fulfilment fee yet is still kept (Nov 2026: a
+         price typed on the Products page vanished on Save when the row had no
+         fee) — the margin waits for the fee, the price does not */
+      const p0 = cPrice && /\d/.test(String(o[cPrice] || '')) ? toNum(o[cPrice]) : null;
+      const r0 = cRef && /\d/.test(String(o[cRef] || '')) ? toNum(o[cRef]) : null;
+      if (p0) out.push({ asin: asin, fba: null, listPrice: p0, refRate: r0 != null ? r0 / p0 : null,
+                         stated: null, flat: 0, fulfilment: '', source: 'typed', priceOnly: true });
+      return;
+    }
     const fba = toNum(raw);
     if (fba == null || !isFinite(fba)) { need++; return; }
     const price = cPrice && /\d/.test(String(o[cPrice] || '')) ? toNum(o[cPrice]) : null;
@@ -6469,7 +6479,13 @@ function mergeFees(ds, rows) {
   const at = dayKey(new Date());
   let replaced = 0;
   rows.forEach(function (r) {
-    if (ds.fees[r.asin]) replaced++;
+    const had = ds.fees[r.asin];
+    if (had) replaced++;
+    /* a price with no fee keeps the fee already on file */
+    if (r.priceOnly && had && had.fba != null) {
+      ds.fees[r.asin] = Object.assign({}, had, { listPrice: r.listPrice, refRate: r.refRate != null ? r.refRate : had.refRate, at: at });
+      return;
+    }
     ds.fees[r.asin] = Object.assign({}, r, { at: at });
   });
   return { count: rows.length, replaced: replaced };
@@ -6513,7 +6529,9 @@ function trafficList(ds) {
  * is taken from the config rather than from Amazon's fee report.
  */
 function productEconomics(ds, asin, price, costs) {
-  const c = (costs || ds.cogs)[asin], f = ds.fees[asin];
+  const c = (costs || ds.cogs)[asin], f0 = ds.fees[asin];
+  /* a record holding only a typed price has no fee to work a margin from */
+  const f = f0 && f0.fba != null ? f0 : null;
   /* A product can be in the file for its name and group and have no landed
      cost yet. That is not a cost of nothing — there is simply no margin to
      work out, and the row says so rather than claiming the whole price. */
@@ -14056,7 +14074,7 @@ function cogsTable(when) {
       row['Price'] = f.listPrice == null ? '' : f.listPrice;
       row['Referral fee'] = (f.refRate != null && f.listPrice)
         ? Math.round(f.refRate * f.listPrice * 100) / 100 : '';
-      row['Fulfilment fee'] = Math.round(((f.fba || 0) + (f.flat || 0)) * 100) / 100;
+      row['Fulfilment fee'] = f.fba == null ? 'Need' : Math.round(((f.fba || 0) + (f.flat || 0)) * 100) / 100;
       row['Source'] = (f.source === 'typed' ? 'typed' : 'Fee Preview') + (f.at ? ' ' + f.at : '');
     } else {
       row['Price'] = ''; row['Referral fee'] = ''; row['Fulfilment fee'] = 'Need'; row['Source'] = '';
@@ -19278,6 +19296,7 @@ function renderPoCard(info) {
 
 var QC_ONLY = false;             /* the QC view: issues only */
 var QC_NOREAD = false;           /* the QC view: only the listings Keepa has no reading of */
+var QC_HELD = null;             /* the rows those ticks picked, kept until the filter changes (12m_products.js) */
 var QC_FILLABLE = 0;
 var KEEPA_DONE_AT = 0;            /* when a pull last finished — the button shows a tick for a moment */             /* empty cells on screen Amazon's page could fill — counted as the view is drawn */
 /** What Amazon's page has for a cell of ours, as the cell would hold it: the text, Yes/No for video and A+; null for nothing. */
@@ -20501,11 +20520,21 @@ function renderProducts() {
       QV[a] = { snap: snap, want: want, v: qcVerdict(DS, a, snap, want) };
     });
     /* issues only, and/or the ones Keepa has never read — both ticked: either */
+    /* The rows the tick picked stay on screen until the filter changes or the
+       page is reloaded (Nov 2026): pull Keepa on the "no Keepa reading" ones
+       and they stay to be looked at, rather than vanishing as they are read.
+       QC_HELD is the ASINs that matched when the filter was last set. */
+    const sig = JSON.stringify([QC_ONLY, QC_NOREAD, PRODUCTS_Q.trim().toLowerCase(), PRODUCTS_FILTER, STATUS_PICK,
+      typeof DOC !== 'undefined' && DOC ? DOC.market : null]);
+    const fresh = !QC_HELD || QC_HELD.sig !== sig;
+    if (fresh) QC_HELD = { sig: sig, asins: {} };
     rows = rows.filter(function (r) {
       const x = QV[r['ASIN']];
       if (!x) return false;
       if (!QC_ONLY && !QC_NOREAD) return true;
-      return (QC_ONLY && x.v.issues.length) || (QC_NOREAD && !x.snap);
+      const now = (QC_ONLY && x.v.issues.length) || (QC_NOREAD && !x.snap);
+      if (fresh) { if (now) QC_HELD.asins[r['ASIN']] = 1; return !!now; }
+      return !!now || !!QC_HELD.asins[r['ASIN']];
     });
   }
   if (PRODUCTS_SORT) {
@@ -20702,7 +20731,7 @@ function renderProductModes() {
   box.innerHTML = [['list', 'List', 'Every column of the list'], ['qc', 'QC', 'The Content columns against what Amazon\'s detail page carries (Keepa)']]
     .map(m => '<button class="mbtn" type="button" data-pm="' + m[0] + '" aria-pressed="' + (PRODUCTS_MODE === m[0]) + '" title="' + m[2] + '">' + m[1] + '</button>').join('');
   box.querySelectorAll('button').forEach(function (b) {
-    b.onclick = function () { if (PRODUCTS_MODE === b.dataset.pm) return; PRODUCTS_MODE = b.dataset.pm; PRODUCTS_SORT = null; renderProducts(); window.scrollTo(0, 0); };
+    b.onclick = function () { if (PRODUCTS_MODE === b.dataset.pm) return; PRODUCTS_MODE = b.dataset.pm; PRODUCTS_SORT = null; QC_HELD = null; renderProducts(); window.scrollTo(0, 0); };
   });
 }
 
@@ -21505,7 +21534,7 @@ const HOWTO = [
       { id: 'products-edit', t: 'Editing',
         b: '<p>Click a cell and type. Changed rows are counted at the top; <b>Save</b> publishes them, <b>Revert</b> takes back the last change, <b>Versions</b> brings back an earlier list. Drag a row by its handle to reorder. A cost typed with a new date applies from that date — earlier weeks keep the old cost.</p>' },
       { id: 'products-qc', t: 'QC against Amazon',
-        b: '<ol><li><b>Pull from Keepa</b> reads the products on screen from Amazon, top to bottom (on the site; the pale number beside it is the Keepa tokens left). With fewer tokens than products it reads what it can and carries on by itself with whatever tokens refill, until all are read — while the page is open. What it reads is saved to the site at once, then every few minutes, and at the end. <b>Stop Keepa</b> ends it; Pull then starts from the top again.</li><li><b>Issues only</b> shows just the rows where Amazon differs from ours; <b>no Keepa reading</b> just the products Keepa has never read (tick it and Pull reads only those). Both ticked: a row that is either.</li></ol><p>Under each field: <b>matches</b>, <b>differs</b> (with <b>use ↑</b> to take Amazon’s text into ours) or <b>missing</b>. The red number in a heading is how many rows are wrong in that column; a green tick means none. Pictures: our brand images above, Amazon’s below, the ones that differ ringed; click a picture to see it large.</p>' },
+        b: '<ol><li><b>Pull from Keepa</b> reads the products on screen from Amazon, top to bottom (on the site; the pale number beside it is the Keepa tokens left). With fewer tokens than products it reads what it can and carries on by itself with whatever tokens refill, until all are read — while the page is open. What it reads is saved to the site at once, then every few minutes, and at the end. <b>Stop Keepa</b> ends it; Pull then starts from the top again.</li><li><b>Issues only</b> shows just the rows where Amazon differs from ours; <b>no Keepa reading</b> just the products Keepa has never read (tick it and Pull reads only those). Both ticked: a row that is either. The rows stay on screen after a Pull or an edit, until you change the filter or reload.</li></ol><p>Under each field: <b>matches</b>, <b>differs</b> (with <b>use ↑</b> to take Amazon’s text into ours) or <b>missing</b>. The red number in a heading is how many rows are wrong in that column; a green tick means none. Pictures: our brand images above, Amazon’s below, the ones that differ ringed; click a picture to see it large.</p>' },
     ] },
 ];
 
