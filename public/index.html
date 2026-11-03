@@ -7150,6 +7150,36 @@ function brandWord(ds) {
 }
 
 /**
+ * Whether a title or a brand column names this brand. Its first word, or the
+ * brand written out where the page holds its initials and the other way round
+ * (Nov 2026: the page named "SRL", the files "Skin Research Labs" — every file
+ * was refused as another brand's).
+ */
+function brandHit(text, ds) {
+  const t = String(text || '').toLowerCase();
+  const word = brandWord(ds);
+  if (word && t.indexOf(word) >= 0) return true;
+  const b = String(ds && ds.brand || '').trim();
+  if (!b || b === 'Brand') return false;
+  const bw = b.split(/[\s&+-]+/).filter(Boolean);
+  /* the page holds initials: "SRL" against "Skin Research Labs …" */
+  if (bw.length === 1 && /^[A-Za-z]{2,6}$/.test(bw[0])) {
+    const init = bw[0].toLowerCase();
+    const words = t.split(/[^a-z0-9]+/).filter(Boolean);
+    for (let i = 0; i + init.length <= words.length; i++) {
+      if (words.slice(i, i + init.length).map(w => w.charAt(0)).join('') === init) return true;
+    }
+  }
+  /* the page holds the full name: "Skin Research Labs" against "SRL …" */
+  if (bw.length >= 2) {
+    const init = bw.map(w => w.charAt(0)).join('').toLowerCase();
+    if (init.length >= 2 && new RegExp('(^|[^a-z0-9])' + init + '([^a-z0-9]|$)').test(t)) return true;
+    if (t.indexOf(b.toLowerCase()) >= 0) return true;
+  }
+  return false;
+}
+
+/**
  * What a read file says about whose products these are: its ASINs, its
  * titles, and (a Fee Preview) the brand column. Null for a file that says
  * nothing — the daily export, a logo, an earlier copy of the page.
@@ -7193,7 +7223,7 @@ function foreignReason(res, ds) {
   const word = brandWord(ds);
   /* the Fee Preview names the brand outright */
   if (word && id.brands.length) {
-    const named = id.brands.filter(b => b.toLowerCase().indexOf(word) >= 0).length;
+    const named = id.brands.filter(b => brandHit(b, ds)).length;
     if (named === 0) {
       const seen = id.brands.filter((b, i, a) => a.indexOf(b) === i).slice(0, 3).join(', ');
       return 'its brand column says <b>' + escHtml(seen) + '</b>, not ' + escHtml(ds.brand) +
@@ -7207,7 +7237,7 @@ function foreignReason(res, ds) {
     if (hits === 0) {
       let titleHits = null;
       if (word && id.titles.length >= 3) {
-        titleHits = id.titles.filter(t => t.toLowerCase().indexOf(word) >= 0).length;
+        titleHits = id.titles.filter(t => brandHit(t, ds)).length;
         /* the titles are the brand's own, so these are new products, not a stranger's */
         if (titleHits / id.titles.length >= 0.2) return null;
       }
