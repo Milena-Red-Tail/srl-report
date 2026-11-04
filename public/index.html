@@ -20626,9 +20626,9 @@ function renderProducts() {
     if (c === 'Product' && foldAsin) {
       /* the name, editable; under it the ASIN — small, linked to Amazon — and the status */
       return '<td class="prcell pnamecell" data-c="Product"><div class="pval pedit' + d + '" data-c="Product" contenteditable="true" spellcheck="false">' + escHtml(v) + '</div>' +
-        '<div class="pasin">' + asinLink(asin, escHtml(asin), 'pasinlink') +
+        '<div class="pasin" data-dlcol="ASIN">' + asinLink(asin, escHtml(asin), 'pasinlink') +
         (qc && QV[asin] && QV[asin].snap && QV[asin].snap.url ? ' <a class="qclink" href="' + escHtml(QV[asin].snap.url) + '" target="_blank" rel="noopener">Amazon ↗</a>' : '') + '</div>' +
-        '<div class="pstatus pstatusin' + (isDirty(asin, 'Status') ? ' dirty' : '') + '" data-c="Status">' + statusPick(asin, r['Status'] == null ? '' : String(r['Status'])) + '</div></td>';
+        '<div class="pstatus pstatusin' + (isDirty(asin, 'Status') ? ' dirty' : '') + '" data-c="Status" data-dlcol="Status">' + statusPick(asin, r['Status'] == null ? '' : String(r['Status'])) + '</div></td>';
     }
     if (PRODUCT_LOCKED.indexOf(c) >= 0) return '<td class="prcell plock" data-c="' + escHtml(c) + '">' + (c === 'ASIN' ? asinLink(asin, asin, 'pname') : escHtml(v)) +
       (qc && QV[asin] && QV[asin].snap && QV[asin].snap.url ? '<a class="qclink" href="' + escHtml(QV[asin].snap.url) + '" target="_blank" rel="noopener">Amazon ↗</a>' : '') + '</td>';
@@ -22426,7 +22426,7 @@ function tdlCellText(td) {
   const sel = td.querySelector('select');
   if (sel && !td.querySelector('.pval, .pname, a')) return sel.selectedIndex >= 0 ? sel.options[sel.selectedIndex].text : '';
   const c = td.cloneNode(true);
-  c.querySelectorAll('svg, button, .brpct, .sub, .grp, .ibadge, .ar, .qhave, .pdate, .spmenu, .pfmenu, input, .tdl, .note').forEach(n => n.remove());
+  c.querySelectorAll('svg, button, .brpct, .sub, .grp, .ibadge, .ar, .qhave, .pdate, .spmenu, .pfmenu, input, .tdl, .note, .qclink').forEach(n => n.remove());
   c.querySelectorAll('select').forEach(function (s) { const o = s.options[s.selectedIndex]; s.replaceWith(document.createTextNode(o ? ' ' + o.text : '')); });
   /* a name cell: the name, with the ASIN under it kept as its own words */
   c.querySelectorAll('*').forEach(el => el.after(' '));
@@ -22468,20 +22468,45 @@ function tdlSheet(t, title) {
     return span === n && tr.cells.length > 1;
   });
   const pctCol = {};
+  /* A cell holding several things on screen (the Products page's name with its
+     ASIN and status under it) marks the parts with data-dlcol: in the file
+     each part is a column of its own, right after the cell's (Nov 2026). */
+  const extra = {};
+  body.forEach(tr => [...tr.cells].forEach(function (td, i) {
+    td.querySelectorAll('[data-dlcol]').forEach(function (el) { const k = el.dataset.dlcol; (extra[i] = extra[i] || []); if (extra[i].indexOf(k) < 0) extra[i].push(k); });
+  }));
+  const exName = {};
+  Object.keys(extra).forEach(function (i) {
+    exName[i] = extra[i].map(function (k) { let h = k; if (seen[h]) { seen[h]++; h = h + ' (' + seen[h] + ')'; } else seen[h] = 1; return [k, h]; });
+  });
   const rows = body.map(function (tr) {
     const o = {};
     /* a drag grip or a tick box in front is not a column */
     const cells = [...tr.cells];
     cells.forEach(function (td, i) {
-      const raw = tdlCellText(td);
+      let src = td;
+      if (exName[i]) {
+        src = td.cloneNode(true);
+        exName[i].forEach(function (p) {
+          const el = src.querySelector('[data-dlcol="' + p[0] + '"]');
+          o[p[1]] = el ? tdlCellText(el) : '';
+          if (el) el.remove();
+        });
+      }
+      const raw = tdlCellText(src);
       const x = i === 0 ? { v: raw } : tdlValue(raw);
-      if (x.pct) pctCol[i] = 1;
+      if (x.pct) pctCol[cols[i]] = 1;
       o[cols[i]] = x.v;
     });
     return o;
   });
+  if (Object.keys(exName).length) {
+    const out = [];
+    cols.forEach(function (h, i) { out.push(h); (exName[i] || []).forEach(p => out.push(p[1])); });
+    cols = out;
+  }
   /* a percentage column says so in its name */
-  const named = cols.map((h, i) => pctCol[i] && !/%/.test(h) ? h + ' %' : h);
+  const named = cols.map(h => pctCol[h] && !/%/.test(h) ? h + ' %' : h);
   rows.forEach(function (o) { cols.forEach(function (h, i) { if (named[i] !== h) { o[named[i]] = o[h]; delete o[h]; } }); });
   cols = named;
   /* columns with no heading and nothing in them (the grip, a delete mark) are left out */
