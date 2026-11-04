@@ -20370,12 +20370,17 @@ function productColumns(table) {
   const order = (kept.order || []).filter(c => names.indexOf(c) >= 0);
   const rest = names.filter(c => order.indexOf(c) < 0);
   const cols = order.length ? order.concat(rest) : first.filter(c => rest.indexOf(c) >= 0).concat(rest.filter(c => first.indexOf(c) < 0));
-  const hidden = kept.hidden || [];
+  /* the product's main picture is never hidden */
+  const hidden = (kept.hidden || []).filter(c => c !== 'Image');
   /* the view: one section of the list, or all of it; the row's identity
-     (ASIN, Product, Status) stays whichever section is on */
+     (Image, ASIN, Product, Status) stays whichever section is on, the
+     picture always first */
   const view = kept.view && PRODUCT_SECTIONS.some(x => x.id === kept.view) ? kept.view : 'all';
-  const always = ['ASIN', 'Product', 'Status'];
-  return { all: cols, shown: cols.filter(c => hidden.indexOf(c) < 0 && (view === 'all' || always.indexOf(c) >= 0 || productSectionOf(c) === view)), hidden: hidden, view: view };
+  const always = ['Image', 'ASIN', 'Product', 'Status'];
+  const shown = cols.filter(c => hidden.indexOf(c) < 0 && (view === 'all' || always.indexOf(c) >= 0 || productSectionOf(c) === view));
+  const im = shown.indexOf('Image');
+  if (im > 0) { shown.splice(im, 1); shown.unshift('Image'); }
+  return { all: cols, shown: shown, hidden: hidden, view: view };
 }
 
 /* The layout of the list — which columns, in what order, in which view, the
