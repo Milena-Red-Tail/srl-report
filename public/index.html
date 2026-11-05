@@ -9344,6 +9344,7 @@ function dealShort(name) {
 /** The ASINs of a group, as the product data files them now. */
 function groupAsins(group) {
   const rows = typeof prodNow === 'function' ? (prodNow(DS) || {}) : {};
+  if (FOLD_BY === 'category') return Object.keys(rows).filter(a => (rows[a].category || 'No category') === group);
   return Object.keys(rows).filter(a => (rows[a].group || 'Unmapped') === group);
 }
 
@@ -10564,7 +10565,13 @@ const GROUP_SUM = ['units', 'sales', 'sessions', 'pageViews', 'orderItems', 'sns
   'spend', 'brSpend', 'adSales', 'adUnits', 'impressions', 'clicks',
   'vcogs', 'returns', 'confirmed', 'unfilled', 'ppmW', 'ppmS'];
 
+/* What a fold is by: the variation group, or — while the Category overview
+   draws and its drawer works out a chart (Nov 2026) — the product's category. */
+var FOLD_BY = 'group';
+function withFold(by, fn) { const was = FOLD_BY; FOLD_BY = by; try { return fn(); } finally { FOLD_BY = was; } }
+const foldKeyOf = r => FOLD_BY === 'category' ? (r.category || 'No category') : r.group;
 function groupFold(rows, extra, scope) {
+  if (FOLD_BY === 'category') rows = rows.map(r => Object.assign({}, r, { group: r.category || 'No category', groupMix: null }));
   /* a group counts the products the Group overview's own status pick lets in (Nov 2026) */
   if (typeof statusOkFor === 'function') rows = rows.filter(r => statusOkFor(scope || 'groups', r));
   const by = {}, order = [];
@@ -10643,7 +10650,62 @@ function groupFold(rows, extra, scope) {
  * per period, which on a dataset of this size is nothing, and it means the
  * chart cannot drift from the table above it — both come from groupFold.
  */
+/* ---------- a drawer's chart on the year to date: years, not months ----------
+ * Asked for (Nov 2026): on YTD the drawers drew one bar per month, each the
+ * whole year to date again ("Jan 1–31 25" eleven times, all $61,827). Now a
+ * bar per year: each year before this one twice — the whole year, and the
+ * same days as this year's to date — then this year to date; the bar before
+ * the ringed one is last year to the same day, so Last year compares like
+ * with like. Years from the first one with data, three at most. */
+function ytdSlots() {
+  const info = periodInfo('ytd', view.key);
+  if (!info) return [];
+  const y = +info.key, md = info.to.slice(5);
+  const firsts = [Object.keys(DS.daily || {}).sort()[0], Object.keys(DS.adAsin || {}).sort()[0], Object.keys(DS.orders || {}).sort()[0]].filter(Boolean).sort();
+  const y0 = Math.max(firsts.length ? +firsts[0].slice(0, 4) : y, y - 2);
+  const md2 = d => { const t = d.slice(5); return t === '02-29' ? '02-28' : t; };
+  const short = MONTHS[+info.to.slice(5, 7) - 1] + ' ' + (+info.to.slice(8, 10));
+  const out = [];
+  for (let k = y0; k < y; k++) {
+    out.push({ label: String(k), from: k + '-01-01', to: k + '-12-31', whole: true, year: k });
+    out.push({ label: k + ' to ' + short, from: k + '-01-01', to: k + '-' + md2(info.to), year: k });
+  }
+  out.push({ label: y + ' to ' + short, from: info.from, to: info.to, year: y, cur: true });
+  return out;
+}
+/** One point per slot, the value worked by `val(from, to)`. */
+function ytdPoints(pm, val) {
+  return ytdSlots().map(function (s) {
+    const v = val(s.from, s.to);
+    const ok = v != null && isFinite(v);
+    return { label: s.label, v: ok ? v : null, partial: false, sel: !!s.cur, _ytd: s, _rg: { from: s.from, to: s.to },
+      tip: '<b>' + rangeLabel(s.from, s.to) + '</b><br>' + pm.t + ' ' + pm.fmt(ok ? v : null) };
+  });
+}
+/** The product rows over any days: the by-ASIN pulls inside them, added up. */
+function ytdRows(from, to) { const rg = spanRange(from, to); return rg ? rg.rows : []; }
+function ytdGroupSales(group, from, to) { const g = groupFold(ytdRows(from, to), null).find(x => x.group === group); return g ? g.sales || 0 : null; }
+
 function groupPoints(group, metricId, shownRange, info) {
+  if (view.mode === 'ytd') {
+    if (view.tab === 'ads') {
+      const pm = AD_PM_BY_ID[metricId] || AD_PM_BY_ID.spend;
+      return ytdPoints(pm, function (f, t) {
+        if (pm.id === 'totalSales') return ytdGroupSales(group, f, t);
+        const agg = adAsinAgg(DS, f, t);
+        const hit = groupFold(agg.rows, agg.brand ? { label: 'Brand-level campaigns', row: agg.brand } : null).find(x => x.group === group);
+        if (pm.id === 'adTacos') { const ts = ytdGroupSales(group, f, t); return ts && hit ? (hit.spend || 0) / ts : null; }
+        return hit ? pm.get(hit) : null;
+      });
+    }
+    const pm = PM_BY_ID[metricId] || PM_BY_ID.sales;
+    return ytdPoints(pm, function (f, t) {
+      const rows = ytdRows(f, t);
+      if (pm.id === 'plan') { let s = 0, any = false; rows.filter(r => r.group === group || (typeof foldKeyOf === 'function' && foldKeyOf(r) === group)).forEach(r => { const v = asinPlanFor(DS, r.asin, f, t); if (v != null) { s += v; any = true; } }); return any ? s : null; }
+      const hit = groupFold(rows, null).find(x => x.group === group);
+      return hit ? pm.get(hit) : null;
+    });
+  }
   const want = view.mode === 'week' ? 'week' : 'month';
   if (view.tab === 'ads') {
     const pm = AD_PM_BY_ID[metricId] || AD_PM_BY_ID.spend;
@@ -10716,7 +10778,7 @@ function groupPoints(group, metricId, shownRange, info) {
  * up (revenue, units, views…); a rate or the plan is not split.
  */
 function groupIncoming(group, rows, pm) {
-  if (!pm || pm.kind !== 'bars' || pm.id === 'plan') return [];
+  if (!pm || pm.kind !== 'bars' || pm.id === 'plan' || FOLD_BY === 'category') return [];
   const members = {};
   groupAsins(group).forEach(a => { members[a] = 1; });
   const by = {};
@@ -10737,7 +10799,7 @@ function groupIncoming(group, rows, pm) {
 function groupPlanFor(group, rg) {
   let sum = 0, any = false;
   if (!rg || !rg.key) return null;              /* a month with no pull has no rows to add up */
-  rowsOfRg(rg).filter(y => y.group === group && (typeof statusOkFor !== 'function' || statusOkFor('groups', y))).forEach(function (y) {
+  rowsOfRg(rg).filter(y => foldKeyOf(y) === group && (typeof statusOkFor !== 'function' || statusOkFor('groups', y))).forEach(function (y) {
     const v = asinPlanFor(DS, y.asin, rg.from, rg.to);
     if (v != null) { sum += v; any = true; }
   });
@@ -10759,7 +10821,7 @@ function groupDetail(g, open, shownRange, info) {
   const before = at > 0 ? pts[at - 1] : at < 0 && withData.length > 1 ? withData[withData.length - 2] : null;
   const prev = before ? before.v : null;
   const cur = pm.get(g);
-  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : 'month';
+  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : view.mode === 'ytd' ? 'year' : 'month';
 
   /* Only the numbers this group actually has: a chip that draws a flat nothing
      is a chip that wastes a click. */
@@ -10773,12 +10835,12 @@ function groupDetail(g, open, shownRange, info) {
   const facts = pm2 ? [
     [pm.t + ' this ' + unit, pm.fmt(cur)],
     [pm2.t + ' this ' + unit, pm2.fmt(pm2.get(g))],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['Products', g.noProducts ? '—' : String(g.products)],
   ] : [
     ['This ' + unit, pm.fmt(cur)],
     ['Last ' + unit, pm.fmt(prev) + ' ' + arrow(deltaOf(cur, prev), pm.good)],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['Products', g.noProducts ? '—' : String(g.products)],
   ];
   const why = 'One bar per ' + unit + ', the group\'s products added up. Ringed: the ' + unit + ' on screen.' + pairWhy(pm, pm2, open.more);
@@ -10793,7 +10855,8 @@ function groupDetail(g, open, shownRange, info) {
     twoName(pm, pm2, open.more) + ' for ' + escHtml(g.name) + '"></svg></div>';
 }
 
-function drawGroupChart(g, open, shownRange, info) {
+function drawGroupChart(g, open, shownRange, info, where) {
+  const W = where || { svg: 'gdetail', rows: '#gRows', key: 'gOpen' };
   const ads = view.tab === 'ads';
   const by = ads ? AD_PM_BY_ID : PM_BY_ID;
   const pm = by[open.metric] || (ads ? AD_PM_BY_ID.spend : PM_BY_ID.sales);
@@ -10801,16 +10864,16 @@ function drawGroupChart(g, open, shownRange, info) {
   const more = (open.more || []).map(id => by[id]).filter(Boolean);
   if (pm2 && more.length) {
     const ms = [pm, pm2].concat(more);
-    drawDetailMany('gdetail', ms.map(m => withDeals(groupPoints(g.group, m.id, shownRange, info), groupAsins(g.group), g.group)), ms);
+    drawDetailMany(W.svg, ms.map(m => withDeals(groupPoints(g.group, m.id, shownRange, info), groupAsins(g.group), g.group)), ms);
   } else {
-    drawDetail('gdetail', withDeals(groupPoints(g.group, pm.id, shownRange, info), groupAsins(g.group), g.group),
+    drawDetail(W.svg, withDeals(groupPoints(g.group, pm.id, shownRange, info), groupAsins(g.group), g.group),
       pm2 ? groupPoints(g.group, pm2.id, shownRange, info) : null, pm, pm2);
   }
-  document.querySelectorAll('#gRows .det .chip').forEach(function (b) {
+  document.querySelectorAll(W.rows + ' .det .chip').forEach(function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
-      const next = pickTwo(view.gOpen, b.dataset.gm);
-      view.gOpen = { group: g.group, metric: next.metric, metric2: next.metric2, more: next.more };
+      const next = pickTwo(view[W.key], b.dataset.gm);
+      view[W.key] = { group: g.group, metric: next.metric, metric2: next.metric2, more: next.more };
       render();
     };
   });
@@ -10987,7 +11050,7 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
     const g = shown.find(x => x.group === open.group);
     if (g) drawGroupChart(g, open, shownRange, info);
   }
-  renderCategoryTable(rows, extra, cols);
+  renderCategoryTable(rows, extra, cols, shownRange, info);
   wireBadges();
 }
 
@@ -10998,7 +11061,11 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
  * a category; a file without the column leaves the page as it was. A
  * product with no category sits under "No category", so the table still
  * adds up to the period. */
-function renderCategoryTable(rows, extra, cols) {
+function renderCategoryTable(rows, extra, cols, shownRange, info) {
+  /* everything here folds by category: the table, its totals, its drawer's chart */
+  return withFold('category', () => renderCategoryTable1(rows, extra, cols, shownRange, info));
+}
+function renderCategoryTable1(rows, extra, cols, shownRange, info) {
   const wrap = document.getElementById('cattable');
   if (!wrap) return;
   const any = rows.some(r => r.category);
@@ -11006,6 +11073,7 @@ function renderCategoryTable(rows, extra, cols) {
   const recut = rows.map(r => Object.assign({}, r, { group: r.category || 'No category', groupMix: null }));
   const all = groupFold(recut, extra);
   if (!all.length) { wrap.hidden = true; return; }
+  if (view.tab === 'ads') adPutTotals(all, info, true);
   wrap.hidden = false;
   const key = view.cSort || (view.tab === 'ads' ? 'spend' : 'sales');
   const dir = view.cDir == null ? -1 : view.cDir;
@@ -11031,10 +11099,31 @@ function renderCategoryTable(rows, extra, cols) {
   GROUP_SUM.forEach(f => { T[f] = all.reduce((s, g) => s + (g[f] || 0), 0); });
   T.brKnown = all.every(g => g.brKnown !== false);
   T.marginTotal = all.reduce((s, g) => s + (g.marginTotal || 0), 0);
+  if (view.tab === 'ads') T.totalSales = all.some(g => g.totalSales != null) ? all.reduce((s, g) => s + (g.totalSales || 0), 0) : null;
+  /* a click on a figure opens the category's history of it underneath, as the groups do (Nov 2026) */
+  const open = view.cOpen && all.some(g => g.group === view.cOpen.group) ? view.cOpen : null;
+  const det = g => groupDetail(g, open, shownRange, info).replace('id="gdetail"', 'id="cdetail"').replace('data-x="gOpen"', 'data-x="cOpen"')
+    .replace("the group's products added up", "the category's products added up");
   document.getElementById('cRows').innerHTML =
-    all.map(g => '<tr data-c="' + escHtml(g.group) + '">' + ccols.map(c => '<td class="cell" data-m="' + c.m + '">' + c.f(g) + '</td>').join('') + '</tr>').join('') +
+    all.map(function (g) {
+      const isOpen = open && g.group === open.group;
+      return '<tr data-c="' + escHtml(g.group) + '"' + (isOpen ? ' class="on"' : '') + '>' + ccols.map(c => '<td class="cell' + (isOpen && onChart(open, c.m) && c.k !== 'name' ? ' picked' : '') + '" data-m="' + c.m + '">' + c.f(g) + '</td>').join('') + '</tr>' +
+        (isOpen ? '<tr class="detail"><td colspan="' + ccols.length + '">' + det(g) + '</td></tr>' : '');
+    }).join('') +
     '<tr class="tot"><td>' + ccols[0].tot(T) + '</td>' + ccols.slice(1).map(c => '<td>' + (c.tot ? c.tot(T) : '') + '</td>').join('') + '</tr>';
   document.getElementById('cNote').textContent = all.length + (all.length === 1 ? ' category' : ' categories');
+  document.querySelectorAll('#cRows tr[data-c] td.cell').forEach(function (td) {
+    td.onclick = function (e) {
+      if (e.target.closest('a')) return;
+      const c = td.closest('tr').dataset.c, m = td.dataset.m;
+      view.cOpen = (view.cOpen && view.cOpen.group === c && onChart(view.cOpen, m)) ? null : { group: c, metric: m };
+      render();
+    };
+  });
+  if (open) {
+    const g = all.find(x => x.group === open.group);
+    if (g) drawGroupChart(g, open, shownRange, info, { svg: 'cdetail', rows: '#cRows', key: 'cOpen' });
+  }
 }
 
 /* ---------- the advertising table ----------
@@ -11493,6 +11582,13 @@ function adShapeOf(p) {
  */
 function adProductPoints(asin, metricId, info) {
   const pm = AD_PM_BY_ID[metricId] || AD_PM_BY_ID.spend;
+  if (view.mode === 'ytd') return ytdPoints(pm, function (f, t) {
+    const sales = () => { const h = ytdRows(f, t).find(r => r.asin === asin); return h ? h.sales || 0 : null; };
+    if (pm.id === 'totalSales') return sales();
+    const acc = adAsinOver(asin, f, t);
+    if (pm.id === 'adTacos') { const ts = sales(); return ts && acc ? acc.spend / ts : null; }
+    return acc ? pm.get(acc) : null;
+  }).map(p => Object.assign(p, { _acc: adAsinOver(asin, p._rg.from, p._rg.to), _key: p.label }));
   const span = adSpan();
   return adPeriodKeys().map(function (key) {
     const p = periodInfo(view.mode, key);
@@ -11537,16 +11633,16 @@ function adDetail(r, open, info) {
     pts.some(p => p._acc && m.get(p._acc) != null && isFinite(m.get(p._acc))))),
     'am', ids);
 
-  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : 'month';
+  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : view.mode === 'ytd' ? 'year' : 'month';
   const facts = pm2 ? [
     [pm.t + ' this ' + unit, pm.fmt(cur)],
     [pm2.t + ' this ' + unit, pm2.fmt(pm2.get(r))],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['Share of ad spend', pct(r._share, 1)],
   ] : [
     ['This ' + unit, pm.fmt(cur)],
     ['Last ' + unit, pm.fmt(prev) + ' ' + arrow(deltaOf(cur, prev), pm.good)],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['Share of ad spend', pct(r._share, 1)],
   ];
 
@@ -12142,6 +12238,14 @@ function dayPointsOf(metricId, rowOf, shownRange) {
 }
 
 function productPoints(asin, metricId, shownRange) {
+  if (view.mode === 'ytd') {
+    const pm = PM_BY_ID[metricId] || PM_BY_ID.sales;
+    return ytdPoints(pm, function (f, t) {
+      if (pm.id === 'plan') return asinPlanFor(DS, asin, f, t);
+      const h = ytdRows(f, t).find(r => r.asin === asin);
+      return h ? pm.get(h) : null;
+    }).map(p => Object.assign(p, { _row: ytdRows(p._rg.from, p._rg.to).find(r => r.asin === asin) || null }));
+  }
   if (view.mode === 'day') {
     return dayPointsOf(metricId, k => orderRows(k, k).find(r => r.asin === asin), shownRange);
   }
@@ -12293,7 +12397,7 @@ function detail(r, open, shownRange) {
 
   /* No pull vocabulary on screen: what the person picked is a month or a week,
      and that is what the figures are named after. */
-  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : 'month';
+  const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : view.mode === 'ytd' ? 'year' : 'month';
 
   /* FBA or FBM when the cost sheet says which; otherwise just the count */
   const skus = r.skus.length + (r.fbm === true ? ' · FBM' : r.fbm === false ? ' · FBA' : '');
@@ -12303,12 +12407,12 @@ function detail(r, open, shownRange) {
   const facts = pm2 ? [
     [pm.t + ' this ' + unit, pm.fmt(cur)],
     [pm2.t + ' this ' + unit, pm2.fmt(pm2.get(r))],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['SKUs', skus],
   ] : [
     ['This ' + unit, pm.fmt(cur)],
     ['Last ' + unit, pm.fmt(prev) + ' ' + arrow(deltaOf(cur, prev), pm.good)],
-    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : 'Months') + ' on record', String(withData.length)],
+    [(unit === 'week' ? 'Weeks' : unit === 'day' ? 'Days' : unit === 'year' ? 'Years' : 'Months') + ' on record', String(unit === 'year' ? new Set(withData.map(p => p._ytd && p._ytd.year)).size : withData.length)],
     ['SKUs', skus],
   ];
 
