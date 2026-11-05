@@ -8432,7 +8432,7 @@ function trendChart(id, pts, opt) {
   {
     const m = { t: opt.name || 'Value', axis: opt.axis };
     const c = cdlCol(m), anyLy = pts.some(p => p.lv != null), anyNote = pts.some(p => cdlNote(p));
-    svg._cdl = { title: opt.name || '', cols: ['Period', c].concat(anyLy ? [c.replace(/( \(%\))?$/, ' last year$1')] : [], anyNote ? ['Note'] : []),
+    svg._cdl = { title: opt.name || '', money: opt.axis === axisMoney || opt.fmt === money ? { [c]: 1, [c.replace(/( \(%\))?$/, ' last year$1')]: 1 } : {}, cols: ['Period', c].concat(anyLy ? [c.replace(/( \(%\))?$/, ' last year$1')] : [], anyNote ? ['Note'] : []),
       rows: pts.map(function (p) { const o = { Period: p.label }; o[c] = cdlVal(m, p.v); if (anyLy) o[c.replace(/( \(%\))?$/, ' last year$1')] = cdlVal(m, p.lv); if (anyNote) o.Note = cdlNote(p); return o; }) };
   }
   /* Full width, and shorter for it: a year of months across 1100 units leaves
@@ -8784,14 +8784,15 @@ function multiChart(id, pts, series, opt) {
   if (!svg) return;
   svg.innerHTML = '';
   {
-    const cols = ['Period'], put = [];
+    const cols = ['Period'], put = [], cash = {};
+    const isMoney = m => m && (m.axis === axisMoney || m.fmt === money);
     series.forEach(function (s) {
-      const c = cdlCol(s.m); cols.push(c); put.push([c, s.vals, s.m]);
-      if (opt.ly && s.lvals && s.lvals.some(v => v != null)) { const c2 = cdlCol(s.m, s.m.t + ' last year'); cols.push(c2); put.push([c2, s.lvals, s.m]); }
+      const c = cdlCol(s.m); cols.push(c); put.push([c, s.vals, s.m]); if (isMoney(s.m)) cash[c] = 1;
+      if (opt.ly && s.lvals && s.lvals.some(v => v != null)) { const c2 = cdlCol(s.m, s.m.t + ' last year'); cols.push(c2); put.push([c2, s.lvals, s.m]); if (isMoney(s.m)) cash[c2] = 1; }
     });
     const anyNote = pts.some(p => cdlNote(p));
     if (anyNote) cols.push('Note');
-    svg._cdl = { title: series.map(s => s.m.t).join(', '), cols: cols,
+    svg._cdl = { title: series.map(s => s.m.t).join(', '), cols: cols, money: cash,
       rows: pts.map(function (p, i) { const o = { Period: p.label }; put.forEach(q => { o[q[0]] = cdlVal(q[2], q[1][i]); }); if (anyNote) o.Note = cdlNote(p); return o; }) };
   }
   const W = 1100, H = 300;
@@ -16207,7 +16208,7 @@ function returnBarChart(pts, opt) {
       escHtml(p.m) + '</text>';
   });
   /* the figures drawn, for the chart's download (Nov 2026) */
-  const cdl = { title: opt.alt || '', cols: ['Month', 'This year', 'Last year'],
+  const cdl = { title: opt.alt || '', cols: ['Month', 'This year', 'Last year'], money: opt.fmt === money ? { 'This year': 1, 'Last year': 1 } : {},
     rows: pts.map(p => ({ Month: p.label || p.m, 'This year': p.now == null ? '' : p.now, 'Last year': p.ly == null ? '' : p.ly })) };
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" ' +
     'role="img" aria-label="' + escHtml(opt.alt || '') + '" data-cdl="' + escHtml(JSON.stringify(cdl)).replace(/"/g, '&quot;') + '">' + g + '</svg>';
@@ -17517,7 +17518,11 @@ const XL_FILLIN = ['Send Units', 'Send Cases', 'Shipment ID', 'Ship Date', 'Meth
 const XL_ORANGE = 'C8722A';
 /* cellXfs, in this order — the sheet writer counts on it:
    0 default · 1 header · 2..7 text/int/dec × plain/zebra · 8..11 the four statuses · 12 fill-in header */
-const XF = { header: 1, text: 2, int: 3, dec: 4, textZ: 5, intZ: 6, decZ: 7, status: 8, fillin: 12 };
+const XF = { header: 1, text: 2, int: 3, dec: 4, textZ: 5, intZ: 6, decZ: 7, status: 8, fillin: 12,
+  /* money, in the report's own currency (Nov 2026: a chart's revenue came out a bare number) */
+  money: 13, moneyDec: 14, moneyZ: 15, moneyDecZ: 16 };
+/** The currency sign the workbook writes money in: the country on screen's. */
+function xlCur() { return (typeof CUR !== 'undefined' && CUR) ? String(CUR) : '$'; }
 
 function stylesXml() {
   const fonts = ['<font><sz val="11"/><name val="Calibri"/></font>',
@@ -17541,10 +17546,14 @@ function stylesXml() {
     xf(0, 0, 1, 0, 'vertical="center"'), xf(0, 0, 1, 164, 'vertical="center"'), xf(0, 0, 1, 165, 'vertical="center"'),
     xf(0, 3, 1, 0, 'vertical="center"'), xf(0, 3, 1, 164, 'vertical="center"'), xf(0, 3, 1, 165, 'vertical="center"'),
   ].concat(XL_STATUS_ORDER.map((s, i) => xf(2 + i, 4 + i, 1, 0, 'horizontal="center" vertical="center"')))
-   .concat([xf(1, 4 + XL_STATUS_ORDER.length, 1, 0, 'horizontal="center" vertical="center" wrapText="1"')]);
+   .concat([xf(1, 4 + XL_STATUS_ORDER.length, 1, 0, 'horizontal="center" vertical="center" wrapText="1"')])
+   .concat([xf(0, 0, 1, 166, 'vertical="center"'), xf(0, 0, 1, 167, 'vertical="center"'),
+            xf(0, 3, 1, 166, 'vertical="center"'), xf(0, 3, 1, 167, 'vertical="center"')]);
+  const cq = xmlEsc('"' + xlCur().replace(/"/g, '') + '"');
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">' +
-    '<numFmts count="2"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="#,##0.0"/></numFmts>' +
+    '<numFmts count="4"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="#,##0.0"/>' +
+    '<numFmt numFmtId="166" formatCode="' + cq + '#,##0;-' + cq + '#,##0"/><numFmt numFmtId="167" formatCode="' + cq + '#,##0.00;-' + cq + '#,##0.00"/></numFmts>' +
     '<fonts count="' + fonts.length + '">' + fonts.join('') + '</fonts>' +
     '<fills count="' + fills.length + '">' + fills.join('') + '</fills>' +
     '<borders count="' + borders.length + '">' + borders.join('') + '</borders>' +
@@ -17555,12 +17564,18 @@ function stylesXml() {
 }
 
 /** One sheet's XML from column names and row objects; a number stays a number. */
-function sheetXml(cols, rows, tableId) {
+function sheetXml(cols, rows, tableId, money) {
+  money = money || {};
   const cell = function (c, r, v, zebra) {
     const ref = colRef(c) + r;
     const status = cols[c] === 'Status' && XL_STATUS_ORDER.indexOf(String(v)) >= 0;
     if (status) {
       return '<c r="' + ref + '" s="' + (XF.status + XL_STATUS_ORDER.indexOf(String(v))) + '" t="inlineStr"><is><t>' + xmlEsc(v) + '</t></is></c>';
+    }
+    if (typeof v === 'number' && isFinite(v) && money[cols[c]]) {
+      /* money, with its sign: whole amounts as whole, the rest to the cent */
+      const cents = Math.round(v) !== v;
+      return '<c r="' + ref + '" s="' + (cents ? (zebra ? XF.moneyDecZ : XF.moneyDec) : (zebra ? XF.moneyZ : XF.money)) + '"><v>' + v + '</v></c>';
     }
     if (typeof v === 'number' && isFinite(v)) {
       /* a rate column keeps its decimal even when it lands on a whole number —
@@ -17635,7 +17650,7 @@ function makeXlsx(sheets) {
     '</Relationships>' });
   files.push({ name: 'xl/styles.xml', text: stylesXml() });
   sheets.forEach(function (s, i) {
-    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1) });
+    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1, s.money) });
     /* an Excel table needs at least one row under its header, so an empty
        shipment sheet is left as plain cells */
     if (!s.rows.length) return;
@@ -22707,7 +22722,7 @@ function tdlValue(s) {
   if (m[1] === '-' || m[3] === '-') n = -n;
   if (m[5] === 'K' || m[5] === 'k') n *= 1e3;
   if (m[5] === 'M' || m[5] === 'm') n *= 1e6;
-  return { v: n, pct: m[5] === '%' };
+  return { v: n, pct: m[5] === '%', money: !!m[2] && m[5] !== '%' };
 }
 
 /** The table as { name, cols, rows } — what makeXlsx writes. */
@@ -22731,7 +22746,7 @@ function tdlSheet(t, title) {
     let span = 0; [...tr.cells].forEach(td => { span += td.colSpan || 1; });
     return span === n && tr.cells.length > 1;
   });
-  const pctCol = {};
+  const pctCol = {}, moneyCol = {};
   /* A cell holding several things on screen (the Products page's name with its
      ASIN and status under it) marks the parts with data-dlcol: in the file
      each part is a column of its own, right after the cell's (Nov 2026). */
@@ -22766,6 +22781,7 @@ function tdlSheet(t, title) {
       const raw = tdlCellText(src);
       const x = i === 0 ? { v: raw } : tdlValue(raw);
       if (x.pct) pctCol[cols[i]] = 1;
+      if (x.money) moneyCol[cols[i]] = 1;
       o[cols[i]] = x.v;
     });
     return o;
@@ -22781,7 +22797,8 @@ function tdlSheet(t, title) {
   cols = named;
   /* columns with no heading and nothing in them (the grip, a delete mark) are left out */
   const keep = cols.filter((h, i) => !/^Column \d+$|^Name$/.test(h) || rows.some(r => r[h] !== '' && r[h] != null));
-  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows };
+  const money = {}; Object.keys(moneyCol).forEach(h => { if (!pctCol[h]) money[h] = 1; });
+  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows, money: money };
 }
 
 /** What the table is called: the heading of the card it sits in. */
@@ -22868,7 +22885,7 @@ function cdlDownload(svg) {
   const d = cdlData(svg);
   if (!d || !d.rows || !d.rows.length) return null;
   const title = cdlTitle(svg, d);
-  const sheet = { name: title.replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: d.cols, rows: d.rows };
+  const sheet = { name: title.replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: d.cols, rows: d.rows, money: d.money || {} };
   const per = (typeof _info !== 'undefined' && _info && _info.label) ? '-' + _info.label : '';
   const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const name = (typeof brandSlugName === 'function' ? brandSlugName() : 'report') + '-' + slug(title).slice(0, 60) + '-chart' + (per ? '-' + slug(per) : '') + '.xlsx';
