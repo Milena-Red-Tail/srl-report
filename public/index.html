@@ -545,6 +545,14 @@ a.qpic{cursor:zoom-in}
 .xdsp{border:0;background:none;color:var(--ink-3);cursor:pointer;font-size:.9rem;padding:0 2px}
 .xdsp:hover{color:var(--crit)}
 .brpct{display:block;font-size:.72rem;font-weight:400;color:var(--ink-3);margin-top:2px;white-space:nowrap}
+/* a comparison under its figure, and its small heading under the column's (Nov 2026) */
+.dsub{display:block;font-size:.74rem;margin-top:3px;white-space:nowrap;line-height:1.2}
+.dsub em{font-style:normal;font-weight:500;color:var(--ink-3);font-size:.68rem;letter-spacing:.02em}
+.hsub{display:block;font-size:.62rem;font-weight:500;color:var(--ink-3);margin-top:2px;letter-spacing:.04em;white-space:nowrap}
+.hsub[data-k]{cursor:pointer;text-decoration:underline dotted;text-underline-offset:2px}
+.hsub[data-k]:hover{color:var(--ink)}
+/* on the PDF's first sheet the comparison table keeps one line a row, so the trends chart still fits */
+.pdf-page .pdfb-compare .dsub{display:inline;margin-left:6px}
 .kspark{display:block;margin:auto auto 0;padding-top:7px;box-sizing:content-box;width:min(120px,100%);height:26px;overflow:visible}
 .kspark polygon{fill:color-mix(in srgb,var(--s1) 13%,transparent);stroke:none}
 .kspark polyline{fill:none;stroke:color-mix(in srgb,var(--s1) 60%,transparent);stroke-width:1.3;stroke-linejoin:round;stroke-linecap:round;vector-effect:non-scaling-stroke}
@@ -6401,17 +6409,31 @@ function prodForRange(ds, from, to) {
   const days = Math.max(1, daysBetween(from, to) + 1);
   /* Kept in the order the product was in them, so a row that reads
      "BoriCaps → Bundles" says which came first. */
-  const mix = {}, order = {};
+  /* each day's group per product; a day with none (before the product is on
+     any sheet, or on a sheet that left its group blank) is the nearest group it
+     had — the first one for the days before it (Nov 2026, Gozney Prep Board:
+     its first group took effect Oct 11, and Oct 1–10 fell in no group, so the
+     group showed 21/31 of its month: 58 units of 85) */
+  const perDay = {};
   for (let i = 0; i < days; i++) {
     const rows = (prodOn(ds, dayKey(addDays(fromKey(from), i))) || { rows: {} }).rows;
     Object.keys(rows).forEach(function (a) {
-      const g = rows[a].group || 'Unmapped';
-      const m = mix[a] || (mix[a] = {});
-      const o = order[a] || (order[a] = []);
-      if (m[g] === undefined) { m[g] = 0; o.push(g); }
-      m[g] += 1;
+      (perDay[a] = perDay[a] || new Array(days).fill(null))[i] = rows[a].group || null;
     });
   }
+  const mix = {}, order = {};
+  Object.keys(perDay).forEach(function (a) {
+    const d = perDay[a];
+    const firstKnown = d.find(g => g);
+    let last = firstKnown || 'Unmapped';
+    const m = mix[a] = {}, o = order[a] = [];
+    d.forEach(function (g) {
+      const k = g || last;
+      if (g) last = g;
+      if (m[k] === undefined) { m[k] = 0; o.push(k); }
+      m[k] += 1;
+    });
+  });
   const byAsin = {};
   Object.keys(mix).forEach(function (a) {
     byAsin[a] = order[a].map(g => ({ group: g, days: mix[a][g], share: mix[a][g] / days }));
@@ -7735,6 +7757,8 @@ function runChecks(ds) {
 /** Whether a product is on the report tables under the status pick on screen. */
 function productShownNow(ds, asin) {
   if (typeof statusFilter !== 'function') return true;
+  /* the Sales page: rows unfiltered, each table applies its own pick (statusOkFor) */
+  if (typeof STATUS_BYPASS !== 'undefined' && STATUS_BYPASS) return true;
   const pick = JSON.stringify(STATUS_PICK) + '|' + (typeof STATUS_VER !== 'undefined' ? STATUS_VER : 0);
   if (!_statusPred || _statusPred.ds !== ds || _statusPred.pick !== pick || _statusPred.stamp !== _statusStamp(ds)) {
     _statusPred = { ds: ds, pick: pick, stamp: _statusStamp(ds), f: statusFilter(ds) };
@@ -8177,8 +8201,8 @@ const METRICS = [
   { id: 'ntbOrders', tab: 'ads', t: 'NTB orders', cap: 'Ad orders from customers who had not bought the brand in the past year. Under it: share of all ad orders.',
     get: a => a.adDays && a.adOrders ? a.ntbOrders : null, fmt: int, axis: axisInt, good: 1, kind: 'bars' },
   /* All revenue, on the Advertising charts only, to set the advertising against
-     (Milena, Oct 2026). Not a row of the comparison table: it is the Sales tab's. */
-  { id: 'totalSales', tab: 'ads', table: false, t: 'Total sales',
+     (Milena, Oct 2026); a row of the comparison table too since Nov 2026. */
+  { id: 'totalSales', tab: 'ads', t: 'Total sales',
     cap: 'All revenue (the Sales tab\'s Revenue), to compare the ads against.',
     get: a => a.sales, fmt: money, axis: axisMoney, good: 1, kind: 'bars' },
   { id: 'spend', tab: 'ads', t: 'Ad spend', cap: 'Total advertising cost.',
@@ -8268,6 +8292,54 @@ function arrow(d, good) {
   return '<span class="' + cls + '">' + (up ? '▲' : '▼') + ' ' + signed(d) + '</span>';
 }
 
+/* ---------- a comparison under its figure ----------
+ * Asked for (Nov 2026): fewer columns. A comparison — % MoM, % vs plan, % YoY —
+ * sits under the figure it is made with ("▼ −27.8% MoM" under the revenue),
+ * coloured, with its arrow, instead of in a column of its own. In a download it
+ * is still a column of its own (data-dlcol), and the heading still sorts by it. */
+function dsub(html, tag, col) {
+  if (html == null || html === '' || /^(<span class="flat">)?—(<\/span>)?$/.test(String(html).trim())) return '';
+  return '<span class="dsub" data-dlcol="' + escHtml(col || tag) + '">' + html + (tag ? ' <em>' + tag + '</em>' : '') + '</span>';
+}
+/** The small heading of a folded comparison; with a key, clicking it sorts by it. */
+function hsub(t, k, dir) {
+  return '<span class="hsub"' + (k ? ' data-k="' + k + '" title="Sort by ' + escHtml(t) + '"' : '') + '>' + t +
+    (dir ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') + '</span>';
+}
+const subTag = t => String(t).replace(/^[%$]\s*/, '');
+/** Columns marked `under: key` folded into the column with that key (when it is there). */
+function foldCols(cols) {
+  const keys = cols.map(c => c.k);
+  const subs = {};
+  cols.forEach(c => { if (c.under && keys.indexOf(c.under) >= 0) (subs[c.under] = subs[c.under] || []).push(c); });
+  return cols.filter(c => !(c.under && subs[c.under])).map(function (c) {
+    const s = subs[c.k];
+    if (!s) return c;
+    const out = Object.assign({}, c, {
+      subs: s,
+      why: [c.why].concat(s.filter(x => x.why).map(x => '<b>' + x.t + '</b> (under it): ' + x.why)).filter(Boolean).join('<br><br>') || undefined,
+      f: r => c.f(r) + s.map(x => dsub(x.f(r), subTag(x.t), x.t)).join(''),
+    });
+    if (c.tot || s.some(x => x.tot)) out.tot = T => (c.tot ? c.tot(T) : '') + s.map(x => x.tot ? dsub(x.tot(T), subTag(x.t), x.t) : '').join('');
+    return out;
+  });
+}
+/** The folded comparisons' headings under a column's own, the one sorted on arrowed. */
+function subHeads(c, sortKey, dir) {
+  return (c.subs || []).map(x => hsub(x.t, x.k, sortKey === x.k ? dir : 0)).join('');
+}
+/* a folded heading sorts its table by itself: the heading's own handler is run as if it were the sub's */
+if (typeof document !== 'undefined') document.addEventListener('click', function (e) {
+  const h = e.target && e.target.closest ? e.target.closest('.hsub[data-k]') : null;
+  if (!h) return;
+  const th = h.closest('th');
+  if (!th || typeof th.onclick !== 'function') return;
+  e.stopPropagation(); e.preventDefault();
+  const k0 = th.dataset.k;
+  th.dataset.k = h.dataset.k;
+  try { th.onclick(e); } finally { if (th.isConnected) th.dataset.k = k0; }
+}, true);
+
 /* ---------- svg plumbing ---------- */
 const SVGNS = 'http://www.w3.org/2000/svg';
 function svgEl(tag, attrs, parent) {
@@ -8345,10 +8417,24 @@ function segColor(g) {
   return _segColor[g];
 }
 
+/* ---------- what a chart shows, as a table to download ----------
+ * Asked for (Nov 2026): a download beside every chart, like the tables have —
+ * the figures drawn, one row a period (12z_tabledl.js puts the button on). A
+ * percentage is written as a percent number, its column saying (%). */
+function cdlCol(m, name) { return (name || (m && m.t) || 'Value') + (m && m.axis === axisPct ? ' (%)' : ''); }
+function cdlVal(m, v) { return v == null || !isFinite(v) ? '' : (m && m.axis === axisPct ? Math.round(v * 10000) / 100 : Math.round(v * 100) / 100); }
+function cdlNote(p) { return [p.partial ? 'not complete' : '', p.deal ? 'Deal: ' + p.deal : ''].filter(Boolean).join(' · '); }
+
 function trendChart(id, pts, opt) {
   const svg = document.getElementById(id);
   if (!svg) return;
   svg.innerHTML = '';
+  {
+    const m = { t: opt.name || 'Value', axis: opt.axis };
+    const c = cdlCol(m), anyLy = pts.some(p => p.lv != null), anyNote = pts.some(p => cdlNote(p));
+    svg._cdl = { title: opt.name || '', cols: ['Period', c].concat(anyLy ? [c.replace(/( \(%\))?$/, ' last year$1')] : [], anyNote ? ['Note'] : []),
+      rows: pts.map(function (p) { const o = { Period: p.label }; o[c] = cdlVal(m, p.v); if (anyLy) o[c.replace(/( \(%\))?$/, ' last year$1')] = cdlVal(m, p.lv); if (anyNote) o.Note = cdlNote(p); return o; }) };
+  }
   /* Full width, and shorter for it: a year of months across 1100 units leaves
      room to write the number above every bar, which is the whole point of
      giving the chart the width. */
@@ -8697,6 +8783,17 @@ function multiChart(id, pts, series, opt) {
   const svg = document.getElementById(id);
   if (!svg) return;
   svg.innerHTML = '';
+  {
+    const cols = ['Period'], put = [];
+    series.forEach(function (s) {
+      const c = cdlCol(s.m); cols.push(c); put.push([c, s.vals, s.m]);
+      if (opt.ly && s.lvals && s.lvals.some(v => v != null)) { const c2 = cdlCol(s.m, s.m.t + ' last year'); cols.push(c2); put.push([c2, s.lvals, s.m]); }
+    });
+    const anyNote = pts.some(p => cdlNote(p));
+    if (anyNote) cols.push('Note');
+    svg._cdl = { title: series.map(s => s.m.t).join(', '), cols: cols,
+      rows: pts.map(function (p, i) { const o = { Period: p.label }; put.forEach(q => { o[q[0]] = cdlVal(q[2], q[1][i]); }); if (anyNote) o.Note = cdlNote(p); return o; }) };
+  }
   const W = 1100, H = 300;
   const hasRight = series.some(s => s.side === 'right');
   const L = 62, R = hasRight ? 62 : 16, T = 24, B = 34;
@@ -9150,7 +9247,7 @@ function drawDetailMany(svgId, lists, metrics) {
  */
 function drawDetail(svgId, ptsA, ptsB, A, B) {
   if (!B || !ptsB) {
-    trendChart(svgId, ptsA, { kind: A.kind, axis: A.axis, fmt: A.fmt, wide: true });
+    trendChart(svgId, ptsA, { kind: A.kind, axis: A.axis, fmt: A.fmt, wide: true, name: A.t });
     return;
   }
   /* Two figures are drawn the way the trends chart draws them — the first as
@@ -9979,9 +10076,9 @@ function renderCompare(info, cs) {
           proj.dealExtra.deals.map(d => escHtml(d.type) + ' ' + escHtml(d.from === d.to ? dayLabel(d.from) : rangeLabel(d.from, d.to)) +
             ' +' + int(Math.round(d.units)) + (d.typed ? ' (your number)' : '')).join(', ') +
           ' — from how each product sold on past deals of the same type (Inbound → Deals).' : '')) +
-      '</th><th>' + perTag + ' exp</th>' : '') +
-    (pairPrev ? '<th>' + (col(cs.prev) || info.prevName) + '</th><th>' + perTag + '</th>' : '') +
-    '<th>' + (col(cs.ly) || info.lyName) + '</th><th>% YoY</th>';
+      hsub(perTag + ' exp') + '</th>' : '') +
+    (pairPrev ? '<th>' + (col(cs.prev) || info.prevName) + hsub(perTag) + '</th>' : '') +
+    '<th>' + (col(cs.ly) || info.lyName) + hsub('% YoY') + '</th>';
 
   /* a share reads pale under the figure it is a share of, not as a row of its own */
   const subsOf = id => metricsFor(view.tab).filter(x => x.under === id);
@@ -10015,11 +10112,11 @@ function renderCompare(info, cs) {
   });
   document.getElementById('cmpRows').innerHTML = live.map(function (m) {
     const v = m.get(cs.cur);
-    const cell = function (a) {
-      if (!a) return '<td>—</td><td>—</td>';
+    const cell = function (a, tag) {
+      if (!a) return '<td>—</td>';
       const x = m.get(a.agg);
-      return '<td>' + m.fmt(x) + subLine(m, a.agg) + '</td><td>' +
-        (a.thin ? '<span class="flat">—</span>' : arrow(deltaOf(v, x), m.good)) + '</td>';
+      return '<td>' + m.fmt(x) + subLine(m, a.agg) +
+        (a.thin ? '' : dsub(arrow(deltaOf(v, x), m.good), subTag(tag), tag)) + '</td>';
     };
     /* the projected month against the previous whole one — the comparison the
        part-month figure beside it cannot make */
@@ -10027,16 +10124,15 @@ function renderCompare(info, cs) {
     if (proj) {
       const pv = m.get(proj);
       const base = prevWhole ? m.get(prevWhole) : null;
-      exp = '<td>' + (pv == null ? '—' : m.fmt(pv) + subLine(m, proj)) + '</td><td>' +
-        (pv == null || base == null ? '<span class="flat">—</span>'
-                                    : arrow(deltaOf(pv, base), m.good)) + '</td>';
+      exp = '<td>' + (pv == null ? '—' : m.fmt(pv) + subLine(m, proj)) +
+        (pv == null || base == null ? '' : dsub(arrow(deltaOf(pv, base), m.good), subTag(perTag) + ' exp', perTag + ' exp')) + '</td>';
     }
     /* Why a figure is missing, on the row that is missing it. */
     const why = (m.id === 'brSpend' && v == null && cs.cur && cs.cur.spend > 0)
       ? '<br><span class="sub">the advertising export for this period did not ' +
         'name its campaigns, so the branded share cannot be worked out</span>' : '';
     return '<tr><td>' + m.t + why + '</td><td class="big">' + m.fmt(v) + subLine(m, cs.cur) + '</td>' + exp +
-      (pairPrev ? cell(cs.prev) : '') + cell(cs.ly) + '</tr>';
+      (pairPrev ? cell(cs.prev, perTag) : '') + cell(cs.ly, '% YoY') + '</tr>';
   }).join('');
 }
 
@@ -10059,8 +10155,8 @@ const YTD_COLS = {
     { k: 'ly', t: 'ly', num: 1, fmt: money },
     { k: 'cur', t: 'cur', num: 1, fmt: money, big: 1 },
     { k: 'plan', t: 'Plan', num: 1, fmt: money },
-    { k: 'toPlan', t: '% to plan', num: 1, delta: 1, good: 1 },
-    { k: 'toLy', t: '% to LY', num: 1, delta: 1, good: 1 },
+    { k: 'toPlan', t: '% to plan', num: 1, delta: 1, good: 1, under: 'plan' },
+    { k: 'toLy', t: '% to LY', num: 1, delta: 1, good: 1, under: 'ly' },
     { k: 'units', t: 'Units', num: 1, fmt: int },
     { k: 'conv', t: 'Conversion', num: 1, fmt: v => pct(v, 1) },
     { k: 'spend', t: 'Ad spend', num: 1, fmt: money },
@@ -10070,7 +10166,7 @@ const YTD_COLS = {
     { k: 'spend', t: 'Ad spend', num: 1, fmt: money, big: 1 },
     { k: 'lySpend', t: 'Ad spend LY', num: 1, fmt: money },
     { k: 'planSpend', t: 'Plan spend', num: 1, fmt: money },
-    { k: 'toPlanSpend', t: '% to plan', num: 1, delta: 1, good: 0 },
+    { k: 'toPlanSpend', t: '% to plan', num: 1, delta: 1, good: 0, under: 'planSpend' },
     { k: 'brSpend', t: 'Branded spend', num: 1, fmt: money, of: 'spend' },
     { k: 'adSales', t: 'Ad revenue', num: 1, fmt: money },
     { k: 'tacos', t: 'TACOS', num: 1, fmt: v => pct(v, 1) },
@@ -10085,24 +10181,24 @@ const YTD_CUM = {
   sales: [
     { k: 'cumSales', t: 'Revenue', fmt: money, big: 1 },
     { k: 'cumPlan', t: 'Plan revenue', fmt: money },
-    { k: 'gapPlan', t: '$ vs plan', fmt: signedMoney },
-    { k: 'cumToPlan', t: '% to plan', delta: 1, good: 1 },
+    { k: 'gapPlan', t: '$ vs plan', fmt: signedMoney, under: 'cumPlan' },
+    { k: 'cumToPlan', t: '% to plan', delta: 1, good: 1, under: 'cumPlan' },
     { k: 'cumLy', t: 'Last year', fmt: money },
-    { k: 'cumToLy', t: '% to LY', delta: 1, good: 1 },
+    { k: 'cumToLy', t: '% to LY', delta: 1, good: 1, under: 'cumLy' },
     { k: 'cumSpend', t: 'Ad spend', fmt: money },
     /* the advertising budget gets the same three columns the revenue plan has,
        named apart so two "% to plan" never sit in one table meaning different
        things */
     { k: 'cumPlanSpend', t: 'Plan ad spend', fmt: money },
-    { k: 'gapPlanSpend', t: '$ vs ad plan', fmt: signedMoney },
-    { k: 'cumToPlanSpend', t: '% to ad plan', delta: 1, good: 0 },
+    { k: 'gapPlanSpend', t: '$ vs ad plan', fmt: signedMoney, under: 'cumPlanSpend' },
+    { k: 'cumToPlanSpend', t: '% to ad plan', delta: 1, good: 0, under: 'cumPlanSpend' },
     { k: 'cumTacos', t: 'TACOS', fmt: v => pct(v, 1) },
   ],
   ads: [
     { k: 'cumSpend', t: 'Ad spend', fmt: money, big: 1 },
     { k: 'cumPlanSpend', t: 'Plan spend', fmt: money },
-    { k: 'gapPlanSpend', t: '$ vs plan', fmt: signedMoney },
-    { k: 'cumToPlanSpend', t: '% to plan', delta: 1, good: 0 },
+    { k: 'gapPlanSpend', t: '$ vs plan', fmt: signedMoney, under: 'cumPlanSpend' },
+    { k: 'cumToPlanSpend', t: '% to plan', delta: 1, good: 0, under: 'cumPlanSpend' },
     { k: 'cumLySpend', t: 'Ad spend LY', fmt: money },
     { k: 'cumBrSpend', t: 'Branded spend', fmt: money, of: 'cumSpend' },
     { k: 'cumAdSales', t: 'Ad revenue', fmt: money },
@@ -10239,14 +10335,19 @@ function renderYtdTable(info) {
   /* One table draws a row per cell, so the two share this. A column nothing
      filled in is not a column. */
   const build = function (list, rows, headEl, bodyEl) {
-    const cols = list.filter(c => rows.some(r => r[c.k] != null));
+    const cols0 = list.filter(c => rows.some(r => r[c.k] != null));
+    /* a comparison under the figure it is made with (Nov 2026) */
+    const subsOf = k => cols0.filter(x => x.under === k);
+    const cols = cols0.filter(c => !(c.under && cols0.some(x => x.k === c.under)));
+    const one = (c, v, r) => c.delta ? arrow(v, c.good) : c.fmt(v) + (c.of ? brPct(v, r[c.of]) : '');
     document.getElementById(headEl).innerHTML =
-      '<th>Month</th>' + cols.map(c => '<th>' + c.t + '</th>').join('');
+      '<th>Month</th>' + cols.map(c => '<th>' + c.t + subsOf(c.k).map(x => hsub(x.t)).join('') + '</th>').join('');
     document.getElementById(bodyEl).innerHTML = rows.map(function (r) {
       const cells = cols.map(function (c) {
         const v = r[c.k];
         return '<td class="num' + (c.big ? ' big' : '') + '">' +
-          (v == null ? '—' : c.delta ? arrow(v, c.good) : c.fmt(v) + (c.of ? brPct(v, r[c.of]) : '')) + '</td>';
+          (v == null ? '—' : one(c, v, r)) +
+          subsOf(c.k).map(x => r[x.k] == null ? '' : dsub(one(x, r[x.k], r), subTag(x.t), x.t)).join('') + '</td>';
       }).join('');
       return '<tr' + (r.ahead ? ' class="ahead"' : '') + '><td>' + r.label +
         (r.part ? ' <span class="sub">' + (r.days === 1 ? '1 day' : r.days + ' days') +
@@ -10394,10 +10495,10 @@ function initTableSearch() {
   const ggs = document.getElementById('gGroupSel');
   if (ggs) {
     ggs.addEventListener('change', function () {
-      view.group = ggs.value;
-      view.showAll = false;
+      /* its own pick (Nov 2026): choosing a group here no longer narrows the products below */
+      view.gGroup = ggs.value;
       view.gAll = false;
-      view.open = null;
+      view.gOpen = null;
       render();
     });
   }
@@ -10462,7 +10563,9 @@ const GROUP_SUM = ['units', 'sales', 'sessions', 'pageViews', 'orderItems', 'sns
   'spend', 'brSpend', 'adSales', 'adUnits', 'impressions', 'clicks',
   'vcogs', 'returns', 'confirmed', 'unfilled', 'ppmW', 'ppmS'];
 
-function groupFold(rows, extra) {
+function groupFold(rows, extra, scope) {
+  /* a group counts the products the Group overview's own status pick lets in (Nov 2026) */
+  if (typeof statusOkFor === 'function') rows = rows.filter(r => statusOkFor(scope || 'groups', r));
   const by = {}, order = [];
   const add = function (key, r, share) {
     let g = by[key];
@@ -10551,9 +10654,10 @@ function groupPoints(group, metricId, shownRange, info) {
       const hit = groupFold(agg.rows, agg.brand
         ? { label: 'Brand-level campaigns', row: agg.brand } : null)
         .find(x => x.group === group);
-      let v = pm.id === 'totalSales' ? adTotalSales(p, null, group) : (hit ? pm.get(hit) : null);
+      const ts = pm.id === 'totalSales' || pm.id === 'adTacos' ? adTotalSales(p, null, group) : null;
+      let v = pm.id === 'totalSales' ? ts : pm.id === 'adTacos' ? (ts && hit ? (hit.spend || 0) / ts : null) : (hit ? pm.get(hit) : null);
       /* as on the sales tab: what the group's products spent while in another group, on top */
-      const segs = pm.id === 'totalSales' ? [] : groupIncoming(group, agg.rows, pm);
+      const segs = pm.id === 'totalSales' || pm.id === 'adTacos' ? [] : groupIncoming(group, agg.rows, pm);
       let own = null, segTip = '';
       if (segs.length) {
         own = (v != null && isFinite(v)) ? v : 0;
@@ -10632,7 +10736,7 @@ function groupIncoming(group, rows, pm) {
 function groupPlanFor(group, rg) {
   let sum = 0, any = false;
   if (!rg || !rg.key) return null;              /* a month with no pull has no rows to add up */
-  rowsOfRg(rg).filter(y => y.group === group).forEach(function (y) {
+  rowsOfRg(rg).filter(y => y.group === group && (typeof statusOkFor !== 'function' || statusOkFor('groups', y))).forEach(function (y) {
     const v = asinPlanFor(DS, y.asin, rg.from, rg.to);
     if (v != null) { sum += v; any = true; }
   });
@@ -10648,7 +10752,11 @@ function groupDetail(g, open, shownRange, info) {
   const pts = groupPoints(g.group, pm.id, shownRange, info);
   const pts2 = pm2 ? groupPoints(g.group, pm2.id, shownRange, info) : null;
   const withData = pts.filter(p => p.v != null);
-  const prev = withData.length > 1 ? withData[withData.length - 2].v : null;
+  /* the period before the ringed one — not the next-to-last bar, which is the
+     ringed one itself when a newer, unfinished period is on the chart */
+  const at = pts.map(p => p.sel).indexOf(true);
+  const before = at > 0 ? pts[at - 1] : at < 0 && withData.length > 1 ? withData[withData.length - 2] : null;
+  const prev = before ? before.v : null;
   const cur = pm.get(g);
   const unit = view.mode === 'week' ? 'week' : view.mode === 'day' ? 'day' : 'month';
 
@@ -10739,7 +10847,7 @@ const GROUP_NAME_COL = {
 let snsShown = false;
 function groupCols(sns, prevRange, adsKnown, planKnown, shownRange) {
   const src = view.tab === 'ads' ? AD_COLS : COLS;
-  return src.filter(c => c && c.k !== 'name' &&
+  const list = src.filter(c => c && c.k !== 'name' &&
       (!(shownRange && shownRange.fromOrders) || ORDER_COLS.indexOf(c.k) >= 0) &&
       (c.k !== 'snsSales' || sns) && (c.k !== 'salesDelta' || prevRange) &&
       (c.k !== 'snsRev' || snsShown) &&
@@ -10749,39 +10857,52 @@ function groupCols(sns, prevRange, adsKnown, planKnown, shownRange) {
       ? Object.assign({}, c, { t: view.mode === 'week' ? '% WoW' : view.mode === 'day' ? '% DoD' : '% MoM' })
       : c)
     .reduce((a, c) => a.concat([c]), [GROUP_NAME_COL]);
+  return foldCols(list);
 }
 
 function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
   const wrap = document.getElementById('grouptable');
   if (!wrap) return;
-  const all = groupFold(rows, extra);
-  if (!all.length) { wrap.hidden = true; return; }
+  /* a group of one product is that product: it is read in the product table,
+     not here (Nov 2026). The brand-level line stays — it is no product at all. */
+  const folded = groupFold(rows, extra);
+  const all = folded.filter(g => g.noProducts || g.products > 1);
+  const singles = folded.length - all.length;
+  if (!all.length) {
+    /* products there, none let in by this table's Status pick or all alone in
+       their groups: the table stays, with its menu, and says so */
+    if (!rows.length) { wrap.hidden = true; return; }
+    wrap.hidden = false;
+    document.getElementById('gRows').innerHTML = '<tr><td colspan="20" class="sub" style="padding:14px">' +
+      (singles ? 'Every group here has one product — they are in the product table.' : 'No groups with the statuses picked.') + '</td></tr>';
+    const nt = document.getElementById('gSearchNote'); if (nt) nt.textContent = '';
+    return;
+  }
+  if (view.tab === 'ads') adPutTotals(all, info, true);
   wrap.hidden = false;
 
   snsShown = all.some(g => g.snsRev != null);
   const cols = groupCols(sns, prevRange, all.some(g => g.tacos != null),
                          all.some(g => g.plan != null), shownRange);
 
-  /* The same picker the products have, on the same state — choosing a group in
-     either place narrows both tables, and both boxes then say the same thing.
-     Two pickers that could disagree would be two answers to one question. */
+  /* Its own picker (Nov 2026): a group chosen here narrows this table only;
+     the product table below keeps its own. */
+  if (!view.gGroup) view.gGroup = 'All';
   const gsel = document.getElementById('gGroupSel');
   if (gsel) {
-    const names = ['All'].concat(groupsOf(rows));
+    const names = ['All'].concat(all.filter(g => !g.noProducts).map(g => g.group).sort((a, b) => a.localeCompare(b)));
     const sig = names.join('|');
     if (gsel.dataset.sig !== sig) {
       gsel.dataset.sig = sig;
       gsel.innerHTML = names.map(g => '<option value="' + escHtml(g) + '">' +
         (g === 'All' ? 'All groups' : escHtml(g)) + '</option>').join('');
     }
-    if (names.indexOf(view.group) < 0) view.group = 'All';
-    gsel.value = view.group;
+    if (names.indexOf(view.gGroup) < 0) view.gGroup = 'All';
+    gsel.value = view.gGroup;
   }
 
   const q = (view.gq || '').trim().toLowerCase();
-  /* The group picker above the products narrows this too — asking for one
-     group and being shown every group would be two answers to one question. */
-  const inPick = g => view.group === 'All' || g.group === view.group;
+  const inPick = g => view.gGroup === 'All' || g.group === view.gGroup;
   const matched = all.filter(g => inPick(g) &&
     (!q || g.group.toLowerCase().indexOf(q) >= 0));
 
@@ -10797,7 +10918,7 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
 
   document.getElementById('gHeadRow').innerHTML = cols.map(c =>
     '<th data-k="' + c.k + '">' + c.t + (c.why ? badge('?', c.why) : '') +
-    (key === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') +
+    (key === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') + subHeads(c, key, dir) +
     '</th>').join('');
   document.querySelectorAll('#gHeadRow th').forEach(th => th.onclick = () => {
     const k = th.dataset.k;
@@ -10811,6 +10932,7 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
   const T = { n: matched.filter(g => !g.noProducts).length };
   GROUP_SUM.forEach(f => { T[f] = matched.reduce((s, g) => s + (g[f] || 0), 0); });
   T.brKnown = matched.every(g => g.brKnown !== false);
+  if (view.tab === 'ads') T.totalSales = matched.some(g => g.totalSales != null) ? matched.reduce((s, g) => s + (g.totalSales || 0), 0) : null;
   T.marginTotal = matched.reduce((s, g) => s + (g.marginTotal || 0), 0);
 
   /* Every numeric cell is a handle, exactly as in the table below: click one
@@ -10844,6 +10966,7 @@ function renderGroupTable(info, rows, extra, sns, prevRange, shownRange) {
   } else {
     note.textContent = matched.length + (matched.length === 1 ? ' group' : ' groups');
   }
+  if (singles && !q) note.insertAdjacentHTML('beforeend', ' <span class="gsingles" title="A group of one product is read in the product table">· ' + singles + ' with one product in the product table</span>');
   /* bound by class, not by id — the product table below has its own button
      saying the same thing, and two of one id is one too many */
   const sa = note.querySelector('.linky');
@@ -10897,7 +11020,7 @@ function renderCategoryTable(rows, extra, cols) {
     tot: t => 'Total<span class="grp">' + t.n + (t.n === 1 ? ' category' : ' categories') + '</span>' }) : c);
   document.getElementById('cHeadRow').innerHTML = ccols.map(c =>
     '<th data-k="' + c.k + '">' + c.t + (c.why ? badge('?', c.why) : '') +
-    (key === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') + '</th>').join('');
+    (key === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') + subHeads(c, key, dir) + '</th>').join('');
   document.querySelectorAll('#cHeadRow th').forEach(th => th.onclick = () => {
     const k = th.dataset.k;
     if (key === k) view.cDir = dir * -1; else { view.cSort = k; view.cDir = -1; }
@@ -10941,6 +11064,14 @@ const AD_COLS = [
   { k: 'ctr', m: 'ctr', t: 'CTR', f: r => pct(r.ctr, 2),
     tot: T => pct(T.impressions ? T.clicks / T.impressions : null, 2) },
   { k: 'adUnits', m: 'adUnits', t: 'Units', f: r => int(r.adUnits), tot: T => int(T.adUnits) },
+  /* Asked for (Nov 2026): the product's (the group's) whole revenue beside its
+     advertising, and the TACOS that makes of them — in both tables */
+  { k: 'totalSales', m: 'totalSales', t: 'Total sales',
+    why: 'Everything sold in the period, ads or not — the Sales tab\'s Revenue. Total: every product of the brand (or of the group picked), advertised or not.',
+    f: r => r.totalSales == null ? '—' : money(r.totalSales), tot: T => T.totalSales == null ? '—' : money(T.totalSales) },
+  { k: 'adTacos', m: 'adTacos', t: 'TACOS',
+    why: 'Ad spend ÷ total sales.',
+    f: r => pct(r.adTacos, 1), tot: T => pct(T.totalSales ? T.spend / T.totalSales : null, 1) },
 ];
 
 /* the columns a day can carry — what the order lines say; nothing that needs
@@ -10962,7 +11093,7 @@ const COLS = [
     f: r => money(r.sales),
     tot: t => money(t.sales),
   },
-  { k: 'salesDelta', m: 'sales', t: '% MoM',
+  { k: 'salesDelta', m: 'sales', t: '% MoM', under: 'sales',
     why: 'Shipped revenue against the period before. Blank without product data for it.',
     f: r => arrow(r.salesDelta, 1),
     tot: t => arrow(deltaOf(t.sales, t.prevSales), 1),
@@ -10976,7 +11107,7 @@ const COLS = [
     f: r => r.plan == null ? '—' : money(r.plan),
     tot: () => '',
   },
-  { k: 'vsPlan', m: 'sales', t: '% vs plan',
+  { k: 'vsPlan', m: 'sales', t: '% vs plan', under: 'plan',
     why: 'Shipped revenue against the product\'s plan.',
     f: r => (r.plan == null || !r.plan) ? '—' : arrow(deltaOf(r.sales, r.plan), 1),
     tot: () => '',
@@ -11040,8 +11171,13 @@ PMETRICS.forEach(m => PM_BY_ID[m.id] = m);
    them at once — so the answers are kept for the life of one render. */
 let _pullCache = {};
 function pullRows(key) {
-  if (!_pullCache[key]) _pullCache[key] = asinForKey(DS, key);
-  return _pullCache[key];
+  const by = typeof STATUS_BYPASS !== 'undefined' && STATUS_BYPASS;
+  const ck = (by ? '*' : '') + key;
+  /* read after the page was drawn: the same rows the tables were drawn from
+     (with what the draw worked onto them), cut to the shared Status pick */
+  if (!by && !_pullCache[ck] && _pullCache['*' + key]) _pullCache[ck] = _pullCache['*' + key].filter(r => productShownNow(DS, r.asin));
+  if (!_pullCache[ck]) _pullCache[ck] = asinForKey(DS, key);
+  return _pullCache[ck];
 }
 
 /* ---------- the listing on Amazon ----------
@@ -11261,6 +11397,27 @@ const AD_PMETRICS = [
   { id: 'adUnits', t: 'Units', get: r => r.adUnits, fmt: int, axis: axisInt, kind: 'bars', good: 1 },
 ];
 AD_PMETRICS.push({ id: 'totalSales', t: 'Total sales', get: r => r._totalSales == null ? null : r._totalSales, fmt: money, axis: axisMoney, kind: 'bars', good: 1 });
+AD_PMETRICS.push({ id: 'adTacos', t: 'TACOS', get: r => r._totalSales ? (r.spend || 0) / r._totalSales : null, fmt: v => pct(v, 1), axis: axisPct, kind: 'line', good: -1 });
+
+/** Every product's sales over the period on screen, read as the Sales tab reads it — or null. */
+function adSalesRows(p) {
+  try { const rg = sparkRange(p); return rg ? (rg.spanned ? rg.rows : pullRows(rg.key)) : null; } catch (e) { return null; }
+}
+/** Total sales and TACOS onto advertising rows (products, or groups with `byGroup`). */
+function adPutTotals(list, p, byGroup) {
+  const sr = adSalesRows(p);
+  const gs = sr && byGroup ? groupFold(sr, null) : null;
+  list.forEach(function (r) {
+    let v = null;
+    if (sr && !r.noProducts && r.asin !== '#brand') {
+      if (byGroup) { const h = gs.find(x => x.group === r.group); v = h ? h.sales || 0 : 0; }
+      else { const h = sr.find(x => x.asin === r.asin); v = h ? (h.sales || 0) * (r._groupShare == null ? 1 : r._groupShare) : 0; }
+    }
+    r.totalSales = v;
+    r.adTacos = v ? (r.spend || 0) / v : null;
+  });
+  return sr;
+}
 const AD_PM_BY_ID = {};
 
 /**
@@ -11341,7 +11498,8 @@ function adProductPoints(asin, metricId, info) {
     if (!p) return null;
     const sh = adShapeOf(p);
     const acc = adAsinOver(asin, p.from, p.to);
-    const v = pm.id === 'totalSales' ? adTotalSales(p, asin) : (acc ? pm.get(acc) : null);
+    const ts = pm.id === 'totalSales' || pm.id === 'adTacos' ? adTotalSales(p, asin) : null;
+    const v = pm.id === 'totalSales' ? ts : pm.id === 'adTacos' ? (ts && acc ? acc.spend / ts : null) : (acc ? pm.get(acc) : null);
     const short = span && (p.from < span.first || p.to > span.last);
     const have = span
       ? rangeLabel(p.from < span.first ? span.first : p.from,
@@ -11374,7 +11532,7 @@ function adDetail(r, open, info) {
   const prev = before ? before.v : null;
 
   if (r.asin !== '#brand') r._totalSales = adTotalSales(info, r.asin);
-  const chips = metricChips(AD_PMETRICS.filter(m => ids.indexOf(m.id) >= 0 || (m.id === 'totalSales' ? r.asin !== '#brand' :
+  const chips = metricChips(AD_PMETRICS.filter(m => ids.indexOf(m.id) >= 0 || (m.id === 'totalSales' || m.id === 'adTacos' ? r.asin !== '#brand' :
     pts.some(p => p._acc && m.get(p._acc) != null && isFinite(m.get(p._acc))))),
     'am', ids);
 
@@ -11442,6 +11600,7 @@ function drawAdProductChart(asin, open, info) {
  */
 function renderAdTable(info) {
   const agg = adAsinAgg(DS, info.from, info.to);
+  agg.rows = agg.rows.filter(r => statusOkFor('products', r));
   const q = (view.q || '').trim();
   const inGroup = r => view.group === 'All' || shareInGroup(r, view.group) > 0;
   /* Cut to the group's share before anything is sorted or totalled, so the
@@ -11455,6 +11614,12 @@ function renderAdTable(info) {
       if (typeof x === 'string') return x.localeCompare(y) * view.adDir * -1;
       return ((x == null ? -Infinity : x) - (y == null ? -Infinity : y)) * view.adDir;
     });
+  const _adSr = adPutTotals(matched, info, false);
+  if (agg.brand) { agg.brand.totalSales = null; agg.brand.adTacos = null; }
+  if ((view.adSort === 'totalSales' || view.adSort === 'adTacos') && _adSr) matched.sort(function (a, b) {
+    const k = view.adSort, x = a[k], y = b[k];
+    return ((x == null ? -Infinity : x) - (y == null ? -Infinity : y)) * view.adDir;
+  });
   const trim = !q && !view.showAll && matched.length > TOP_N;
   const rows = trim ? matched.slice(0, TOP_N) : matched;
 
@@ -11525,6 +11690,12 @@ function renderAdTable(info) {
               impressions: sum('impressions'), clicks: sum('clicks'),
               adUnits: sum('adUnits'), brSpend: sum('brSpend'),
               brKnown: agg.brDays > 0 };
+  /* the total's sales: the whole brand's (or the whole picked group's) when
+     nothing is searched — advertised or not, as TACOS is read on the cards —
+     and the matched products' own under a search */
+  T.totalSales = !_adSr ? null : q ? sum('totalSales')
+    : view.group === 'All' ? _adSr.filter(x => statusOkFor('products', x)).reduce((s, x) => s + (x.sales || 0), 0)
+    : ((groupFold(_adSr, null, 'products').find(x => x.group === view.group) || {}).sales || 0);
 
   /* Every cell is a handle, exactly as on the Sales tab: click one and that
      product's history of that number opens underneath. */
@@ -11641,6 +11812,7 @@ function groupedOrder(all) {
 }
 
 function renderTable(all, shownRange, prevRange, info) {
+  all = all.filter(r => statusOkFor('products', r));
   const q = (view.q || '').trim();
   /* The two narrow together: pick BoriCap and type 30 and you get BoriCap 30,
      not everything called 30 plus everything in BoriCap. */
@@ -11722,7 +11894,7 @@ function renderTable(all, shownRange, prevRange, info) {
   const adsKnown = rows.some(r => r.tacos != null);
   /* the plan columns exist only when a plan by product covers this window */
   const planKnown = all.some(r => r.plan != null);
-  const cols = COLS.filter(c => (c.k !== 'salesDelta' || prevRange) &&
+  const cols0 = COLS.filter(c => (c.k !== 'salesDelta' || prevRange) &&
                                 (!shownRange.fromOrders || ORDER_COLS.indexOf(c.k) >= 0) &&
                                 (c.k !== 'tacos' || adsKnown) &&
                                 ((c.k !== 'plan' && c.k !== 'vsPlan') || planKnown) &&
@@ -11731,13 +11903,14 @@ function renderTable(all, shownRange, prevRange, info) {
     .map(c => c.k === 'salesDelta'
       ? Object.assign({}, c, { t: view.mode === 'week' ? '% WoW' : view.mode === 'day' ? '% DoD' : '% MoM' })
       : c);
+  const cols = foldCols(cols0);
 
   /* the Product header stands for the grouped order: its arrow shows when
      that order is on, and clicking it brings the order back or flips it */
   const sortKey = c => c.k === 'name' ? 'group' : c.k;
   document.getElementById('headRow').innerHTML = cols.map(c =>
     '<th data-k="' + c.k + '">' + c.t + (c.why ? badge('?', c.why) : '') +
-    (view.sort === sortKey(c) ? ' <span class="ar">' + (view.dir < 0 ? '▼' : '▲') + '</span>' : '') +
+    (view.sort === sortKey(c) ? ' <span class="ar">' + (view.dir < 0 ? '▼' : '▲') + '</span>' : '') + subHeads(c, view.sort, view.dir) +
     (c.k === 'name' && view.sort === 'group' ? ' <span class="grp" style="display:inline;text-transform:none;letter-spacing:0">by group</span>' : '') +
     '</th>').join('');
   document.querySelectorAll('#headRow th').forEach(th => th.onclick = () => {
@@ -12098,7 +12271,11 @@ function detail(r, open, shownRange) {
   const ids = [pm.id].concat(pm2 ? [pm2.id] : []).concat((open.more || []).filter(id => id !== pm.id && (!pm2 || id !== pm2.id)));
   const pts = productPoints(r.asin, pm.id, shownRange);
   const withData = pts.filter(p => p.v != null);
-  const prev = withData.length > 1 ? withData[withData.length - 2].v : null;
+  /* the period before the ringed one — not the next-to-last bar, which is the
+     ringed one itself when a newer, unfinished period is on the chart */
+  const at = pts.map(p => p.sel).indexOf(true);
+  const before = at > 0 ? pts[at - 1] : at < 0 && withData.length > 1 ? withData[withData.length - 2] : null;
+  const prev = before ? before.v : null;
   const cur = pm.get(r);
 
   /* A chip is offered when any charted period has the figure. The plan is not
@@ -12534,12 +12711,14 @@ function renderBundles(info, cs) {
   const sa = note.querySelector('.linky');
   if (sa) sa.onclick = function () { view.bAll = !view.bAll; render(); };
 
-  const cols = BUNDLE_COLS.filter(c => c.k !== 'delta' || (prevB && prevB.covers));
+  /* the change sits under Revenue (Nov 2026), not in a column of its own */
+  const bDelta = prevB && prevB.covers;
+  const bTag = info.mode === 'week' ? '% WoW' : info.mode === 'ytd' ? '% YoY' : info.mode === 'day' ? '% ' + dayTag() : '% MoM';
+  const cols = BUNDLE_COLS.filter(c => c.k !== 'delta');
   document.getElementById('bHeadRow').innerHTML = cols.map(c =>
-    '<th data-k="' + c.k + '">' +
-    (c.k === 'delta' ? (info.mode === 'week' ? '% WoW' : info.mode === 'ytd' ? '% YoY' : info.mode === 'day' ? '% ' + dayTag() : '% MoM')
-                     : c.t) +
+    '<th data-k="' + c.k + '">' + c.t +
     (sortK === c.k ? ' <span class="ar">' + (dir < 0 ? '▼' : '▲') + '</span>' : '') +
+    (c.k === 'sales' && bDelta ? hsub(bTag, 'delta', sortK === 'delta' ? dir : 0) : '') +
     '</th>').join('');
   document.querySelectorAll('#bHeadRow th').forEach(th => th.onclick = function () {
     const k = th.dataset.k;
@@ -12561,7 +12740,7 @@ function renderBundles(info, cs) {
         '<span class="grp">' + r.asin +
         (r.multi ? ' · multipack' : '') + (r.unsold ? ' · no sales in ' + escHtml(info.label) : '') + '</span>') + '</td>';
     }
-    if (c.k === 'delta') return '<td>' + arrow(r.delta, c.good) + '</td>';
+    if (c.k === 'sales') return '<td>' + (r.sales == null ? '—' : c.fmt(r.sales)) + (bDelta ? dsub(arrow(r.delta, 1), subTag(bTag), bTag) : '') + '</td>';
     return '<td>' + (r[c.k] == null ? '—' : c.fmt(r[c.k])) + '</td>';
   };
   const total = '<tr class="total"><td><b>' + matched.length +
@@ -12881,7 +13060,14 @@ function renderPeriods(info) {
 }
 
 /* ---------- master render ---------- */
+/* The Sales page draws with every product's rows; each table then applies its
+   own status pick — the Group overview its own, the rest the shared one. */
 function render() {
+  const was = STATUS_BYPASS;
+  STATUS_BYPASS = true;
+  try { return renderPage.apply(this, arguments); } finally { STATUS_BYPASS = was; }
+}
+function renderPage() {
   /* the days left out of the report while it is open (12q_exclude.js) */
   EXCL = null;
   if (view.excl && view.excl.length && view.mode !== 'day') { EXCL = {}; view.excl.forEach(k => { EXCL[k] = 1; }); }
@@ -13026,7 +13212,7 @@ function render() {
   /* each product's own plan for the window the rows cover */
   if (rangeNow) rows.forEach(r => { r.plan = asinPlanFor(DS, r.asin, rangeNow.from, rangeNow.to); });
 
-  renderKpis(info, cs, rows, prevRows);
+  renderKpis(info, cs, rows.filter(r => statusOkFor('products', r)), prevRows ? prevRows.filter(r => statusOkFor('products', r)) : prevRows);
   renderHealth(info);
   renderPoCard(info);
   paintFreshBar(info);
@@ -16020,8 +16206,11 @@ function returnBarChart(pts, opt) {
     g += '<text class="tick" x="' + cx + '" y="' + (H - 10) + '" text-anchor="middle">' +
       escHtml(p.m) + '</text>';
   });
+  /* the figures drawn, for the chart's download (Nov 2026) */
+  const cdl = { title: opt.alt || '', cols: ['Month', 'This year', 'Last year'],
+    rows: pts.map(p => ({ Month: p.label || p.m, 'This year': p.now == null ? '' : p.now, 'Last year': p.ly == null ? '' : p.ly })) };
   return '<svg viewBox="0 0 ' + W + ' ' + H + '" width="100%" preserveAspectRatio="xMidYMid meet" ' +
-    'role="img" aria-label="' + escHtml(opt.alt || '') + '">' + g + '</svg>';
+    'role="img" aria-label="' + escHtml(opt.alt || '') + '" data-cdl="' + escHtml(JSON.stringify(cdl)).replace(/"/g, '&quot;') + '">' + g + '</svg>';
 }
 
 /** The key above a chart, drawn with the same fills the bars use. */
@@ -16195,8 +16384,7 @@ function returnReasonCard(info, now, prod) {
       (isFaultReason(c) ? ' <span class="sub">ours to fix</span>' : '') + '</td>' +
       '<td class="num">' + int(u) + '</td>' +
       '<td class="num">' + pct(u / now.units, 1) + '</td>' +
-      '<td class="num">' + (was == null ? '—' : int(was)) + '</td>' +
-      '<td class="num">' + (was ? arrow(deltaOf(u, was), -1) : '—') + '</td></tr>' +
+      '<td class="num">' + (was == null ? '—' : int(was)) + (was ? dsub(arrow(deltaOf(u, was), -1), 'YoY', '% YoY') : '') + '</td></tr>' +
       (RET_WHY === c ? returnWhyRow(info, c, u, prod) : '');
   }).join('');
 
@@ -16206,7 +16394,7 @@ function returnReasonCard(info, now, prod) {
         : ' Nothing loaded for ' + escHtml(lyInfo.label) + '.')) + '</h2>' +
     (codes.length
       ? '<div class="scroll"><table class="cmp"><thead><tr><th>Reason</th><th>Units</th>' +
-        '<th>Share</th><th>' + escHtml(lyInfo ? lyInfo.short : 'Last year') + '</th><th>YoY</th>' +
+        '<th>Share</th><th>' + escHtml(lyInfo ? lyInfo.short : 'Last year') + hsub('% YoY') + '</th>' +
         '</tr></thead><tbody>' + body + '</tbody></table></div>'
       : '<p class="sub">No returns in this period.</p>') +
     '</div>';
@@ -17660,8 +17848,12 @@ function inbMonthChart(pts, row) {
       (p.cutTo ? '<text class="tick" x="' + cx + '" y="' + (H + 4) + '" text-anchor="middle">to ' + MONTHS[+p.cutTo.slice(5, 7) - 1] + ' ' + (+p.cutTo.slice(8)) + '</text>' : '');
   });
   const tall = pts.some(p => p.cutTo) ? H + 10 : H;
+  /* the figures drawn, for the chart's download (Nov 2026) */
+  const C = ['Month', 'Sold', 'Expected, covered by FBA stock', 'Expected, covered by AWD stock', 'Expected, to send', 'Expected (stock unknown)'];
+  const nz = v => v == null ? '' : v;
+  const cdl = { title: row.name, cols: C, rows: pts.map(p => ({ Month: p.label, Sold: nz(p.sold), [C[2]]: nz(p.coveredFba), [C[3]]: nz(p.coveredAwd), [C[4]]: nz(p.send), [C[5]]: p.covered == null ? nz(p.forecast) : '' })) };
   return '<svg viewBox="0 0 ' + W + ' ' + tall + '" width="100%" preserveAspectRatio="xMidYMid meet" role="img" ' +
-    'aria-label="' + escHtml(row.name + ': units sold the last six months and expected over the days to cover, with what the stock covers') + '">' + g + '</svg>';
+    'aria-label="' + escHtml(row.name + ': units sold the last six months and expected over the days to cover, with what the stock covers') + '" data-cdl="' + escHtml(JSON.stringify(cdl)).replace(/"/g, '&quot;') + '">' + g + '</svg>';
 }
 
 function inbDetailRow(row, info) {
@@ -20265,6 +20457,10 @@ var PRODUCT_KEEP_COLS = ['ASIN', 'Product', 'Status', 'Group', 'TOTAL COGS', 'To
 
 /** What the report tables show: null — every status but Deleted and Closed — or the statuses ticked. */
 var STATUS_PICK = null;
+/** The Group overview's own pick (Nov 2026: its filters no longer narrow the product table, nor the product table's it). */
+var GROUP_STATUS_PICK = null;
+/** While the Sales page draws, the rows come unfiltered and each table applies its own pick. */
+var STATUS_BYPASS = false;
 /** Which page's status menu is open, if any. */
 var STATUS_MENU_OPEN = null;
 /** Bumped whenever the product sheets change, so a cached status test is rebuilt. */
@@ -20277,31 +20473,48 @@ function productStatus(ds, asin) {
 }
 
 /** A predicate for the pick on screen, with the product map resolved once. */
-function statusFilter(ds) {
+function statusFilter(ds, pick) {
+  if (pick === undefined) pick = STATUS_PICK;
   const map = typeof cogsNow === 'function' ? cogsNow(ds) : {};
   const of = a => ((map[a] && map[a].status) || PRODUCT_NO_STATUS);
-  if (!STATUS_PICK) return a => { const s = of(a); return s !== 'Deleted' && s !== 'Closed'; };
-  const on = {}; STATUS_PICK.forEach(s => { on[s] = 1; });
+  if (!pick) return a => { const s = of(a); return s !== 'Deleted' && s !== 'Closed'; };
+  const on = {}; pick.forEach(s => { on[s] = 1; });
   return a => !!on[of(a)];
 }
 /** The statuses ticked on the menu: the pick, or by default every one but Deleted and Closed. */
-function statusChosen() {
-  return STATUS_PICK ? STATUS_PICK.slice() : productStatuses().filter(s => s !== 'Deleted' && s !== 'Closed');
+function statusChosen(pick) {
+  if (pick === undefined) pick = STATUS_PICK;
+  return pick ? pick.slice() : productStatuses().filter(s => s !== 'Deleted' && s !== 'Closed');
 }
 /** What the button says. */
-function statusPickLabel() {
-  if (!STATUS_PICK) return 'All but Deleted & Closed';
+function statusPickLabel(pick) {
+  if (pick === undefined) pick = STATUS_PICK;
+  if (!pick) return 'All but Deleted & Closed';
   const all = productStatuses();
-  if (all.every(s => STATUS_PICK.indexOf(s) >= 0)) return 'All statuses';
-  if (!STATUS_PICK.length) return 'No status';
-  return STATUS_PICK.length <= 2 ? STATUS_PICK.join(', ') : STATUS_PICK.length + ' statuses';
+  if (all.every(s => pick.indexOf(s) >= 0)) return 'All statuses';
+  if (!pick.length) return 'No status';
+  return pick.length <= 2 ? pick.join(', ') : pick.length + ' statuses';
+}
+/** The pick a menu stands for: the Group overview's own, or the one every other table shares. */
+const pickOf = key => key === 'groups' ? GROUP_STATUS_PICK : STATUS_PICK;
+function setPick(key, v) { if (key === 'groups') GROUP_STATUS_PICK = v; else STATUS_PICK = v; }
+/** Is this row's product shown in a table of this kind ('groups' or anything else) under its pick? */
+var _statusOk = {};
+function statusOkFor(scope, r) {
+  const asin = r && typeof r === 'object' ? r.asin : r;
+  if (!asin || String(asin).charAt(0) === '#' || typeof DS === 'undefined' || !DS) return true;
+  const pick = scope === 'groups' ? GROUP_STATUS_PICK : STATUS_PICK;
+  const sig = JSON.stringify(pick) + '|' + STATUS_VER + '|' + (typeof _statusStamp === 'function' ? _statusStamp(DS) : '');
+  let c = _statusOk[scope === 'groups' ? 'g' : 'p'];
+  if (!c || c.ds !== DS || c.sig !== sig) c = _statusOk[scope === 'groups' ? 'g' : 'p'] = { ds: DS, sig: sig, f: statusFilter(DS, pick) };
+  return c.f(asin);
 }
 
 /** The status picker the report tables carry: a button and a menu of tick boxes; every copy shows the same choice. */
 function statusPickHtml(label, key) {
   key = key || 'x';
-  const open = STATUS_MENU_OPEN === key, chosen = statusChosen();
-  return '<span class="spwrap" data-sp="' + escHtml(key) + '"><button type="button" class="psel statuspick" aria-haspopup="true" aria-expanded="' + open + '" aria-label="' + escHtml(label || 'Which products to show') + '" title="Which products to show, by their status on the Products page">Status: ' + escHtml(statusPickLabel()) + '</button>' +
+  const open = STATUS_MENU_OPEN === key, pk = pickOf(key), chosen = statusChosen(pk);
+  return '<span class="spwrap" data-sp="' + escHtml(key) + '"><button type="button" class="psel statuspick" aria-haspopup="true" aria-expanded="' + open + '" aria-label="' + escHtml(label || 'Which products to show') + '" title="Which products to show, by their status on the Products page">Status: ' + escHtml(statusPickLabel(pk)) + '</button>' +
     (open ? '<div class="spmenu" role="menu"><span class="pfalls"><button type="button" class="spall" data-all="1">Select all</button><button type="button" class="spall" data-all="0">Unselect all</button><button type="button" class="spall" data-all="live">All but Deleted &amp; Closed</button></span>' +
       productStatuses().map(s => '<label class="spitem"><input type="checkbox" class="spbox" value="' + escHtml(s) + '"' + (chosen.indexOf(s) >= 0 ? ' checked' : '') + '> ' + escHtml(s) + '</label>').join('') + '</div>' : '') + '</span>';
 }
@@ -20324,7 +20537,8 @@ document.addEventListener('click', function (e) {
   }
   const all = t && t.closest ? t.closest('button.spall') : null;
   if (all) {
-    STATUS_PICK = all.dataset.all === 'live' ? null : all.dataset.all === '1' ? productStatuses().slice() : [];
+    const k = (all.closest('.spwrap') || { dataset: {} }).dataset.sp;
+    setPick(k, all.dataset.all === 'live' ? null : all.dataset.all === '1' ? productStatuses().slice() : []);
     statusRedraw();
     return;
   }
@@ -20339,7 +20553,7 @@ document.addEventListener('change', function (e) {
   const box = e.target;
   if (!box || !box.classList || !box.classList.contains('spbox')) return;
   const menu = box.closest('.spmenu');
-  STATUS_PICK = [...menu.querySelectorAll('input.spbox')].filter(x => x.checked).map(x => x.value);
+  setPick((box.closest('.spwrap') || { dataset: {} }).dataset.sp, [...menu.querySelectorAll('input.spbox')].filter(x => x.checked).map(x => x.value));
   statusRedraw();
 });
 
@@ -20460,7 +20674,7 @@ function filtersKey() {
 }
 function saveFilters() {
   try {
-    localStorage.setItem(filtersKey(), JSON.stringify({ products: PRODUCTS_FILTER, status: STATUS_PICK,
+    localStorage.setItem(filtersKey(), JSON.stringify({ products: PRODUCTS_FILTER, status: STATUS_PICK, gstatus: GROUP_STATUS_PICK,
       inbound: typeof INB_FILTER !== 'undefined' ? INB_FILTER : null,
       inbBasis: typeof INB_BASIS !== 'undefined' ? INB_BASIS : null, inbMonths: typeof INB_PLAN_MONTHS !== 'undefined' ? INB_PLAN_MONTHS : null }));
   } catch (e) { /* a browser that keeps nothing simply forgets */ }
@@ -20471,6 +20685,7 @@ function loadFilters() {
     if (!o) return;
     if (o.products && typeof o.products === 'object' && !Array.isArray(o.products)) PRODUCTS_FILTER = o.products;
     if (o.status === null || Array.isArray(o.status)) STATUS_PICK = o.status;
+    if (o.gstatus === null || Array.isArray(o.gstatus)) GROUP_STATUS_PICK = o.gstatus;
     if (o.inbound && typeof o.inbound === 'object' && typeof INB_FILTER !== 'undefined') INB_FILTER = o.inbound;
     if ((o.inbBasis === 'plan' || o.inbBasis === 'past') && typeof INB_BASIS !== 'undefined') INB_BASIS = o.inbBasis;
     if (typeof o.inbMonths === 'number' && o.inbMonths >= 1 && o.inbMonths <= 24 && typeof INB_PLAN_MONTHS !== 'undefined') INB_PLAN_MONTHS = Math.round(o.inbMonths);
@@ -21415,6 +21630,50 @@ function productFloatPlace() {
   /* the picture and the name stay put when the table is moved sideways, as they do below */
   t.querySelectorAll('th.pstick').forEach(function (th) { th.style.transform = 'translateX(' + (sr.left - r.left) + 'px)'; });
 }
+
+/* ---------- a menu stays where it was scrolled ----------
+ * Asked for (Nov 2026): ticking a value in a filter list (Products → Filter →
+ * Group, the Status menus, Inbound's filter…) drew the page again and the list
+ * jumped back to its top. Before any click or change inside a menu, every
+ * scrolled list in a menu — and the page itself — is noted by where it sits in
+ * the page; once the page has been drawn again the same lists are put back
+ * where they were. */
+const KEEP_SCROLL_SEL = '[role="menu"], .pfvals, .spmenu, .pfmenu, .dpbox, .scroll';
+function keepScrollKey(el) {
+  const parts = [];
+  for (let n = el; n && n !== document.body && n.nodeType === 1; n = n.parentElement) {
+    if (n.id) { parts.unshift('#' + n.id); break; }
+    let p = n.tagName.toLowerCase() + [...n.classList].filter(c => !/^(open|on|picked|active|sel)$/.test(c)).map(c => '.' + c).join('');
+    ['c', 'sp', 'key', 'fc', 'col', 'k'].forEach(k => { if (n.dataset && n.dataset[k] != null) p += '[' + k + '=' + n.dataset[k] + ']'; });
+    parts.unshift(p);
+  }
+  return parts.join('>');
+}
+let _keepScroll = null;
+function keepScrollNote(e) {
+  const t = e.target;
+  if (!t || !t.closest || !t.closest('[role="menu"], .pfmenu, .spmenu, .pfvals, .dpbox, .pfwrap, .spwrap')) return;
+  const lists = [];
+  document.querySelectorAll(KEEP_SCROLL_SEL).forEach(function (el) {
+    if (el.scrollTop > 0 || el.scrollLeft > 0) lists.push({ key: keepScrollKey(el), top: el.scrollTop, left: el.scrollLeft });
+  });
+  _keepScroll = { lists: lists, y: window.scrollY, x: window.scrollX };
+  const snap = _keepScroll;
+  const put = function () {
+    if (_keepScroll !== snap) return;
+    snap.lists.forEach(function (s) {
+      document.querySelectorAll(KEEP_SCROLL_SEL).forEach(function (el) {
+        if (keepScrollKey(el) === s.key) { if (el.scrollTop !== s.top) el.scrollTop = s.top; if (el.scrollLeft !== s.left) el.scrollLeft = s.left; }
+      });
+    });
+    if (Math.abs(window.scrollY - snap.y) > 1 || Math.abs(window.scrollX - snap.x) > 1) window.scrollTo(snap.x, snap.y);
+  };
+  /* after every handler of this event has run, and before the page is painted */
+  setTimeout(put, 0);
+  if (typeof requestAnimationFrame === 'function') requestAnimationFrame(put);
+}
+document.addEventListener('click', keepScrollNote, true);
+document.addEventListener('change', keepScrollNote, true);
 
 
 /* ===== 12n_howto.js ===== */
@@ -22458,7 +22717,7 @@ function tdlSheet(t, title) {
   const seen = {};
   let cols = heads.map(function (th, i) {
     const c = th.cloneNode(true);
-    c.querySelectorAll('.ibadge, .ar, select, button, .pcolown, svg').forEach(n => n.remove());
+    c.querySelectorAll('.ibadge, .ar, select, button, .pcolown, svg, .hsub').forEach(n => n.remove());
     let h = c.textContent.replace(/[▲▼?]/g, '').replace(/\s+/g, ' ').trim() || (i ? 'Column ' + (i + 1) : 'Name');
     if (seen[h]) { seen[h]++; h = h + ' (' + seen[h] + ')'; } else seen[h] = 1;
     return h;
@@ -22494,7 +22753,13 @@ function tdlSheet(t, title) {
         src = td.cloneNode(true);
         exName[i].forEach(function (p) {
           const el = src.querySelector('[data-dlcol="' + p[0] + '"]');
-          o[p[1]] = el ? tdlCellText(el) : '';
+          /* a comparison under its figure ("▼ −27.8% MoM") is a number in the file */
+          if (el && el.classList.contains('dsub')) {
+            const c = el.cloneNode(true); c.querySelectorAll('em').forEach(n => n.remove());
+            const x = tdlValue(tdlCellText(c));
+            if (x.pct) pctCol[p[1]] = 1;
+            o[p[1]] = x.v;
+          } else o[p[1]] = el ? tdlCellText(el) : '';
           if (el) el.remove();
         });
       }
@@ -22582,12 +22847,58 @@ function tdlButtonFor(t) {
   return p && p.classList.contains('tdl') && p._tdlTable === t ? p.querySelector('button') : null;
 }
 
+/* ---------- the same for a chart ---------- */
+function cdlData(svg) {
+  if (svg._cdl) return svg._cdl;
+  const a = svg.getAttribute('data-cdl');
+  if (!a) return null;
+  try { return JSON.parse(a); } catch (e) { return null; }
+}
+/** What the chart is called: its drawer's heading, else its card's, and what it draws. */
+function cdlTitle(svg, d) {
+  const det = svg.closest('.det');
+  const h = det ? det.querySelector('.dethead h3, h3') : null;
+  let base = '';
+  if (h) { const c = h.cloneNode(true); c.querySelectorAll('.ibadge, .sub, select, button').forEach(n => n.remove()); base = c.textContent.replace(/\s+/g, ' ').trim(); }
+  if (!base) base = tdlTitle(svg);
+  const what = d && d.title ? String(d.title) : '';
+  return (base && what && base.indexOf(what) < 0 ? base + ' - ' + what : base || what || 'Chart');
+}
+function cdlDownload(svg) {
+  const d = cdlData(svg);
+  if (!d || !d.rows || !d.rows.length) return null;
+  const title = cdlTitle(svg, d);
+  const sheet = { name: title.replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: d.cols, rows: d.rows };
+  const per = (typeof _info !== 'undefined' && _info && _info.label) ? '-' + _info.label : '';
+  const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const name = (typeof brandSlugName === 'function' ? brandSlugName() : 'report') + '-' + slug(title).slice(0, 60) + '-chart' + (per ? '-' + slug(per) : '') + '.xlsx';
+  downloadBlob(name, makeXlsx([sheet]));
+  return { name: name, sheet: sheet };
+}
+/** The mark over every chart that carries its figures — after each drawing. */
+function cdlMark() {
+  document.querySelectorAll('svg').forEach(function (svg) {
+    const d = cdlData(svg);
+    const prev = svg.previousElementSibling;
+    const has = prev && prev.classList && prev.classList.contains('cdl');
+    const any = d && d.rows && d.rows.some(r => d.cols.slice(1).some(c => c !== 'Note' && r[c] !== '' && r[c] != null));
+    if (!any) { if (has) prev.remove(); return; }
+    if (has) { prev._svg = svg; return; }
+    const bar = document.createElement('div');
+    bar.className = 'tdl cdl';
+    bar.innerHTML = '<button type="button" class="tdlbtn" title="Download what this chart shows as an Excel table" aria-label="Download this chart as an Excel table">' + TDL_ICON + '</button>';
+    bar._svg = svg;
+    bar.querySelector('button').onclick = function (e) { e.stopPropagation(); cdlDownload(bar._svg); };
+    svg.parentNode.insertBefore(bar, svg);
+  });
+}
+
 let _tdlQueued = false;
 if (typeof MutationObserver !== 'undefined' && typeof document !== 'undefined') {
   new MutationObserver(function () {
     if (_tdlQueued) return;
     _tdlQueued = true;
-    requestAnimationFrame(function () { _tdlQueued = false; try { tdlMark(); } catch (e) { /* a table half drawn is marked on the next pass */ } });
+    requestAnimationFrame(function () { _tdlQueued = false; try { tdlMark(); } catch (e) { /* a table half drawn is marked on the next pass */ } try { cdlMark(); } catch (e) { /* likewise a chart */ } });
   }).observe(document.documentElement, { childList: true, subtree: true });
 }
 
