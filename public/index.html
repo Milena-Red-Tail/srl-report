@@ -1407,6 +1407,25 @@ tr.isect td { background:#f3f0e9; font-weight:700; font-size:.78rem; letter-spac
   .pactions .pacts{display:inline-flex;gap:6px;align-items:center}
   .pbar .btn.tiny{min-height:32px}
   .pfwrap{position:relative;display:inline-block}
+  /* the heading's filter, as in Excel (Nov 2026) */
+  table.products thead th .pfhead{border:1px solid transparent;background:none;color:var(--ink-3);cursor:pointer;font-size:.7rem;line-height:1;padding:2px 4px;margin-left:4px;border-radius:4px;vertical-align:middle}
+  table.products thead th .pfhead:hover{border-color:var(--line);color:var(--ink);background:var(--surface)}
+  table.products thead th .pfhead.on{color:var(--s1);border-color:color-mix(in srgb,var(--s1) 40%,transparent);background:color-mix(in srgb,var(--s1) 10%,transparent)}
+  .pfdrop{position:absolute;z-index:60;width:260px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 10px 28px rgba(0,0,0,.16);padding:6px 0;font-size:.86rem;text-transform:none;letter-spacing:0;font-weight:400;color:var(--ink)}
+  .pfdrop .pfdsort,.pfdrop .pfdclear{display:block;width:100%;text-align:left;border:0;background:none;font:inherit;padding:6px 12px;cursor:pointer;color:var(--ink)}
+  .pfdrop .pfdsort:hover,.pfdrop .pfdclear:hover{background:var(--surface-2)}
+  .pfdrop .pfdclear{color:var(--crit);border-bottom:1px solid var(--line)}
+  .pfdrop .pfdfields{display:flex;gap:4px;padding:2px 10px 6px;border-bottom:1px solid var(--line);margin-bottom:4px}
+  .pfdrop .pfdfield{font:inherit;font-size:.76rem;border:1px solid var(--line);background:none;border-radius:6px;padding:2px 8px;cursor:pointer;color:var(--ink-2)}
+  .pfdrop .pfdfield.on{border-color:var(--s1);color:var(--s1);background:color-mix(in srgb,var(--s1) 10%,transparent)}
+  .pfdrop .pfdq{display:block;box-sizing:border-box;width:calc(100% - 20px);margin:6px 10px;font:inherit;padding:5px 8px;border:1px solid var(--line);border-radius:6px;background:var(--surface);color:var(--ink)}
+  .pfdrop .pfdlist{max-height:260px;overflow:auto;margin:0 10px;border:1px solid var(--line);border-radius:6px;padding:4px 0}
+  .pfdrop .pfdlist label{display:flex;align-items:center;gap:6px;padding:3px 8px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  .pfdrop .pfdlist label[hidden]{display:none}
+  .pfdrop .pfdlist label span{overflow:hidden;text-overflow:ellipsis}
+  .pfdrop .pfdlist label:hover{background:var(--surface-2)}
+  .pfdrop .pfdall{font-weight:600}
+  .pfdrop .pfdbtns{display:flex;justify-content:flex-end;gap:6px;padding:8px 10px 2px}
   .pfmenu{position:absolute;top:calc(100% + 4px);left:0;z-index:30;min-width:220px;background:var(--surface);border:1px solid var(--line);border-radius:10px;box-shadow:0 8px 24px rgba(0,0,0,.12);padding:4px 0}
   .pfcol{position:relative}
   .pfcol .pfname,.pfcol .pfarrow{display:inline-block;padding:7px 12px;cursor:pointer;font-size:.86rem}
@@ -20558,6 +20577,104 @@ function productFilterHtml(fcols, fopts) {
     on.map(c => '<span class="pfchip" title="' + escHtml(c + ': ' + productFilterLabel(c)).replace(/"/g, '&quot;') + '"><span class="pfchipt">' + escHtml(c) + ': ' + escHtml(productFilterLabel(c)) + '</span><button type="button" class="pfchipx" data-fc="' + escHtml(c) + '" aria-label="Remove filter ' + escHtml(c) + '">×</button></span>').join('');
 }
 
+/** What is filtered, as chips beside the search (each with its ×), and Clear all — the filters themselves are on the headings. */
+function productFilterChips() {
+  const on = Object.keys(PRODUCTS_FILTER);
+  return on.map(c => '<span class="pfchip" title="' + escHtml(c + ': ' + productFilterLabel(c)).replace(/"/g, '&quot;') + '"><span class="pfchipt">' + escHtml(c) + ': ' + escHtml(productFilterLabel(c)) + '</span><button type="button" class="pfchipx" data-fc="' + escHtml(c) + '" aria-label="Remove filter ' + escHtml(c) + '">×</button></span>').join('') +
+    (on.length ? '<button type="button" class="btn tiny" id="pfilterClear">Clear all filters</button>' : '');
+}
+
+/* ---------- a filter on every heading, as in Excel ----------
+ * Asked for (Nov 2026): the Filter button and its menu replaced by a ▾ on each
+ * column heading. It opens: Sort A → Z / Z → A, a search, (Select all) and a
+ * tick box per value the column takes among the rows the other filters leave,
+ * then OK / Cancel. Nothing is redrawn until OK, so the list stays where it is. */
+const PF_ICON = '<svg viewBox="0 0 10 10" width="9" height="9" aria-hidden="true"><path d="M1 2h8L6 5.6V9L4 8V5.6z" fill="currentColor"/></svg>';
+function productHeadFilter(c, fields) {
+  const on = (fields || [c]).some(f => PRODUCTS_FILTER[f] !== undefined);
+  return '<button type="button" class="pfhead' + (on ? ' on' : '') + '" data-fc="' + escHtml(c) + '"' + (fields ? ' data-fields="' + escHtml(fields.join('|')) + '"' : '') +
+    ' title="' + (on ? 'Filtered — ' : '') + 'Sort and filter ' + escHtml(c) + '" aria-label="Filter ' + escHtml(c) + '" aria-haspopup="true">' + (on ? PF_ICON : '▾') + '</button>';
+}
+function pfClose() { const d = document.getElementById('pfDrop'); if (d) d.remove(); }
+function pfValues(f) {
+  const L = PRODUCTS_LIST_NOW; if (!L) return [];
+  const set = {};
+  L.rows.forEach(function (r) {
+    if (L.q && !L.all.some(c => String(r[c] == null ? '' : r[c]).toLowerCase().indexOf(L.q) >= 0)) return;
+    /* the other columns' filters narrow the list, as Excel's do; this column's own does not */
+    if (!Object.keys(PRODUCTS_FILTER).every(c => c === f || PRODUCTS_FILTER[c].indexOf(L.fval(r, c)) >= 0)) return;
+    set[L.fval(r, f)] = 1;
+  });
+  /* a value ticked in this column's filter stays in its list even when nothing else shows it */
+  (PRODUCTS_FILTER[f] || []).forEach(v => { set[v] = 1; });
+  return Object.keys(set).sort((a, b) => a === '' ? 1 : b === '' ? -1 : a.localeCompare(b, undefined, { numeric: true, sensitivity: 'base' }));
+}
+function pfOpen(btn) {
+  pfClose();
+  const col = btn.dataset.fc;
+  const fields = btn.dataset.fields ? btn.dataset.fields.split('|') : [col];
+  let f = fields.find(x => PRODUCTS_FILTER[x] !== undefined) || fields[0];
+  const d = document.createElement('div');
+  d.id = 'pfDrop'; d.className = 'pfdrop'; d.setAttribute('role', 'dialog'); d.setAttribute('aria-label', 'Sort and filter ' + col);
+  const draw = function () {
+    const vals = pfValues(f);
+    const cur = PRODUCTS_FILTER[f];
+    d.innerHTML =
+      (fields.length > 1 ? '<div class="pfdfields">' + fields.map(x => '<button type="button" class="pfdfield' + (x === f ? ' on' : '') + '" data-f="' + escHtml(x) + '">' + escHtml(x) + '</button>').join('') + '</div>' : '') +
+      '<button type="button" class="pfdsort" data-dir="1">Sort A → Z</button><button type="button" class="pfdsort" data-dir="-1">Sort Z → A</button>' +
+      (cur !== undefined ? '<button type="button" class="pfdclear">Clear filter from “' + escHtml(f) + '”</button>' : '') +
+      '<input type="search" class="pfdq" placeholder="Search" autocomplete="off" spellcheck="false" aria-label="Search the values of ' + escHtml(f) + '">' +
+      '<div class="pfdlist"><label class="pfdall"><input type="checkbox" class="pfdallbox"> (Select all)</label>' +
+      vals.map(v => '<label class="pfdval" title="' + escHtml(v || '(Blanks)').replace(/"/g, '&quot;') + '"><input type="checkbox" class="pfdbox" value="' + escHtml(v).replace(/"/g, '&quot;') + '"' + (cur === undefined || cur.indexOf(v) >= 0 ? ' checked' : '') + '> <span>' + escHtml(v === '' ? '(Blanks)' : (v.length > 70 ? v.slice(0, 70) + '…' : v)) + '</span></label>').join('') +
+      (vals.length ? '' : '<p class="sub" style="margin:6px 8px">No values.</p>') + '</div>' +
+      '<div class="pfdbtns"><button type="button" class="btn tiny pfdok">OK</button><button type="button" class="btn tiny pfdcancel">Cancel</button></div>';
+    const boxes = () => [...d.querySelectorAll('input.pfdbox')];
+    const shown = () => boxes().filter(b => !b.closest('label').hidden);
+    const allBox = d.querySelector('.pfdallbox');
+    const syncAll = function () { const s = shown(); allBox.checked = s.length > 0 && s.every(b => b.checked); allBox.indeterminate = !allBox.checked && s.some(b => b.checked); };
+    syncAll();
+    allBox.onchange = function () { shown().forEach(b => { b.checked = allBox.checked; }); syncAll(); };
+    boxes().forEach(b => { b.onchange = syncAll; });
+    const qi = d.querySelector('.pfdq');
+    qi.oninput = function () {
+      const s = qi.value.trim().toLowerCase();
+      boxes().forEach(b => { const v = b.value.toLowerCase(); b.closest('label').hidden = !!s && v.indexOf(s) < 0; if (s) b.checked = v.indexOf(s) >= 0; });
+      syncAll();
+    };
+    qi.onkeydown = function (e) { if (e.key === 'Enter') { e.preventDefault(); ok(); } if (e.key === 'Escape') pfClose(); };
+    const ok = function () {
+      const s = qi.value.trim();
+      const pick = boxes().filter(b => b.checked && (!s || !b.closest('label').hidden)).map(b => b.value);
+      /* every value ticked, and no search narrowing it: no filter at all */
+      if (!s && pick.length === boxes().length) delete PRODUCTS_FILTER[f]; else PRODUCTS_FILTER[f] = pick;
+      pfClose(); renderProducts();
+    };
+    d.querySelector('.pfdok').onclick = ok;
+    d.querySelector('.pfdcancel').onclick = pfClose;
+    const cl = d.querySelector('.pfdclear');
+    if (cl) cl.onclick = function () { delete PRODUCTS_FILTER[f]; pfClose(); renderProducts(); };
+    d.querySelectorAll('.pfdsort').forEach(b => { b.onclick = function () { PRODUCTS_SORT = { col: f, dir: +b.dataset.dir }; pfClose(); renderProducts(); }; });
+    d.querySelectorAll('.pfdfield').forEach(b => { b.onclick = function () { f = b.dataset.f; draw(); }; });
+  };
+  draw();
+  document.body.appendChild(d);
+  /* under the heading, kept inside the window */
+  const r = btn.getBoundingClientRect();
+  const w = Math.max(240, d.offsetWidth);
+  let left = r.left + window.scrollX;
+  if (left + w > window.scrollX + document.documentElement.clientWidth - 8) left = window.scrollX + document.documentElement.clientWidth - 8 - w;
+  d.style.left = Math.max(8, left) + 'px';
+  d.style.top = (r.bottom + window.scrollY + 4) + 'px';
+  const q = d.querySelector('.pfdq'); if (q) q.focus({ preventScroll: true });
+}
+document.addEventListener('click', function (e) {
+  const t = e.target;
+  const b = t && t.closest ? t.closest('button.pfhead') : null;
+  if (b) { e.stopPropagation(); e.preventDefault(); const d = document.getElementById('pfDrop'); if (d && d.dataset.for === b.dataset.fc) { pfClose(); return; } pfOpen(b); const nd = document.getElementById('pfDrop'); if (nd) nd.dataset.for = b.dataset.fc; return; }
+  if (t && t.closest && !t.closest('#pfDrop')) pfClose();
+}, true);
+document.addEventListener('keydown', function (e) { if (e.key === 'Escape') pfClose(); });
+
 /** Every edit on the page, oldest first, for Revert to take back one at a time. */
 var PRODUCTS_EDITS = [];
 
@@ -20679,7 +20796,8 @@ document.addEventListener('change', function (e) {
 /* ---------- the page ---------- */
 
 var PRODUCTS_Q = '';
-var PRODUCTS_FOPTS = {};    /* every value each filter column takes, as the menu last drew them */
+var PRODUCTS_FOPTS = {};
+var PRODUCTS_LIST_NOW = null; /* the rows, search and cell reader the last drawing used */    /* every value each filter column takes, as the menu last drew them */
 var PRODUCTS_SORT = null;      /* { col, dir } */
 var PRODUCTS_DIRTY = {};       /* asin → { col → value } edited and not yet saved */
 
@@ -20860,7 +20978,10 @@ function renderProducts() {
   const shown = foldAsin ? shown0.filter(c => c !== 'ASIN' && c !== 'Status') : shown0;
   const q = PRODUCTS_Q.trim().toLowerCase();
   /* on a page that shows only the House Brands listings, House Brand is Yes on every row: no filter for it */
-  const fcols = PRODUCT_FILTER_COLS.filter(c => (pc.all.indexOf(c) >= 0 || c === 'Status') && !(c === 'House Brand' && t.houseOnly));
+  /* every column filters, from its heading, as in Excel (Nov 2026) — the
+     ASIN and Status too, which are read under the name */
+  const fcols = pc.all.filter(c => c !== 'Image' && c !== 'Brand images' && !(c === 'House Brand' && t.houseOnly))
+    .concat(['ASIN', 'Status'].filter(c => pc.all.indexOf(c) < 0));
   const fval = (r, c) => c === 'Status' ? (r['Status'] || PRODUCT_NO_STATUS) : String(r[c] == null ? '' : r[c]).trim();
   /* a filter on a column the list does not have is dropped — once there is a list to say so */
   if (t.rows.length) Object.keys(PRODUCTS_FILTER).forEach(c => { if (fcols.indexOf(c) < 0 || !Array.isArray(PRODUCTS_FILTER[c])) delete PRODUCTS_FILTER[c]; });
@@ -20873,6 +20994,8 @@ function renderProducts() {
   Object.keys(PRODUCTS_FILTER).forEach(c => { if (fopts[c] && fopts[c].length && fopts[c].every(v => PRODUCTS_FILTER[c].indexOf(v === '(blank)' ? '' : v) >= 0)) delete PRODUCTS_FILTER[c]; });
   /* kept for the menu's clicks, which are wired outside this function */
   PRODUCTS_FOPTS = fopts;
+  /* and what a heading's filter list is worked from: the rows, the search, how a cell reads */
+  PRODUCTS_LIST_NOW = { rows: t.rows, q: q, all: pc.all, fval: fval, qc: qc };
   /* the QC view's reading of every product: the snapshot, the master list as
      the row reads now, the verdict — bundles included */
   const QV = {};
@@ -21006,6 +21129,7 @@ function renderProducts() {
   const qmarkHtml = c => qmark[c] == null ? '' : qmark[c] ? ' <span class="qhbad" title="' + qmark[c] + ' wrong among the rows on screen">' + qmark[c] + '</span>' : ' <span class="qhok" title="All right on the rows on screen">✓</span>';
   const arrow = c => PRODUCTS_SORT && PRODUCTS_SORT.col === c ? ' <span class="ar">' + (PRODUCTS_SORT.dir < 0 ? '▼' : '▲') + '</span>' : '';
   const head = '<th class="pgrip"></th>' + shown.map(c => '<th data-c="' + escHtml(c) + '"' + (qc ? ' title="Click to sort"' : ' draggable="true" title="Click to sort · drag to move the column"') + '>' + escHtml(c) + qmarkHtml(c) + arrow(c) +
+    (c === 'Pictures' || (fcols.indexOf(c) < 0 && c !== 'Product') ? '' : productHeadFilter(c, c === 'Product' && foldAsin ? ['Product', 'ASIN', 'Status'] : null)) +
     (!qc && productCanDropCol(c) ? '<span class="pcolown"><select class="pq pcolview" data-col="' + escHtml(c) + '" title="Which view this column belongs to" aria-label="View of column ' + escHtml(c) + '">' +
       PRODUCT_SECTIONS.map(x => '<option value="' + x.id + '"' + (productSectionOf(c) === x.id ? ' selected' : '') + '>' + x.t + '</option>').join('') + '</select>' +
       (productSectionOf(c) === 'listing' ? '<select class="pq pcolview pcolkeepa" data-col="' + escHtml(c) + '" title="The Keepa attribute this column is checked against in QC" aria-label="Keepa field of column ' + escHtml(c) + '">' +
@@ -21071,7 +21195,7 @@ function renderProducts() {
       '<input type="text" id="productsQ" placeholder="Search any column" value="' + escHtml(PRODUCTS_Q).replace(/"/g, '&quot;') + '" style="min-width:220px;width:auto" autocomplete="off">' +
       (qc ? '' : '<label class="sub" for="pview">Columns</label><select class="pq" id="pview" aria-label="Which part of the list to show">' +
         [['all', 'All columns']].concat(PRODUCT_SECTIONS.map(x => [x.id, x.t])).map(o => '<option value="' + o[0] + '"' + (pc.view === o[0] ? ' selected' : '') + '>' + o[1] + '</option>').join('') + '</select>') +
-      (fcols.length && t.rows.length ? productFilterHtml(fcols, fopts) : '') +
+      (t.rows.length ? productFilterChips() : '') +
       (!qc && DS.prodCols && DS.prodCols.rowOrder && DS.prodCols.rowOrder.length ? '<button type="button" class="btn tiny" id="pOrderReset" title="Forget the order the products were dragged into: each group back to Active first, then by sales">Reset order</button>' : '') + '</span>' +
       '<span class="sub">' + (q || Object.keys(PRODUCTS_FILTER).length ? rows.length + ' of ' + t.rows.length : '') + '</span>' +
     '</div>' +
