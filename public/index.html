@@ -2449,6 +2449,11 @@ function detect(head) {
      columns, and it is the only export here that is a photograph rather than a
      history: it says nothing about any day but the one it was pulled on. */
   if (has('sku') && has('afn-fulfillable-quantity')) return 'fbaInv';
+  /* The same warehouse, as Inventory -> Inventory Planning -> FBA Inventory
+     writes it (Nov 2026, a Gozney CA file was taken for product data): a
+     snapshot-date column, "available", "inbound-shipped"… Its headings are
+     renamed to the Manage FBA Inventory ones on the way in (INV_ALT). */
+  if (has('snapshot-date') && has('asin') && has('available') && (has('inbound-shipped') || has('inbound-quantity'))) return 'fbaInv';
   /* The deals diary, as this page hands it out — the only file here that
      Amazon never wrote. A year of promotions is easier pasted from a
      spreadsheet than typed one at a time. */
@@ -3375,6 +3380,11 @@ function mergeDeals(ds, rows) {
  * says so, because a snapshot quietly stamped with the wrong day is a cover
  * figure nobody can check.
  */
+/* The FBA Inventory (planning) report's headings, as Manage FBA Inventory names them. */
+const INV_ALT = { 'available': 'afn-fulfillable-quantity', 'fc-transfer': 'afn-fc-transfer-quantity',
+  'inbound-working': 'afn-inbound-working-quantity', 'inbound-shipped': 'afn-inbound-shipped-quantity',
+  'inbound-received': 'afn-inbound-receiving-quantity', 'total reserved quantity': 'afn-reserved-quantity',
+  'unfulfillable-quantity': 'afn-unsellable-quantity' };
 const INV_FIELDS = [
   ['afn-fulfillable-quantity', 'avail'],
   ['afn-fc-transfer-quantity', 'fcx'],
@@ -3387,7 +3397,7 @@ const INV_FIELDS = [
 
 function readFbaInv(objs, at) {
   const by = {};
-  let skus = 0;
+  let skus = 0, stamp = null;
   objs.forEach(function (o) {
     const asin = String(o['asin'] || '').trim().toUpperCase();
     if (!asin) return;
@@ -3399,13 +3409,17 @@ function readFbaInv(objs, at) {
       if (o[f[0]] === undefined) return;
       x[f[1]] = (x[f[1]] || 0) + toNum(o[f[0]]);
     });
-    const sku = String(o['sku'] == null ? '' : o['sku']).trim();
+    const sv = o['sku'] != null ? o['sku'] : o['SKU'];
+    const sku = String(sv == null ? '' : sv).trim();
     if (sku && x.skus.indexOf(sku) < 0) x.skus.push(sku);
     const name = String(o['product-name'] == null ? '' : o['product-name']).trim();
     if (name && !x.name) x.name = name;
+    /* the planning report says which day it is a picture of */
+    const sd = String(o['snapshot-date'] == null ? '' : o['snapshot-date']).trim().slice(0, 10);
+    if (/^\d{4}-\d{2}-\d{2}$/.test(sd)) stamp = sd;
   });
-  return { at: at || dayKey(new Date()), by: by, skus: skus,
-           products: Object.keys(by).length };
+  return { at: stamp || at || dayKey(new Date()), by: by, skus: skus,
+           products: Object.keys(by).length, fromColumn: !!stamp };
 }
 
 /* What the report actually needs from a cost file, which is less than most
@@ -4066,6 +4080,9 @@ function readTable(rows, fileName) {
   /* What the report reads and this file does not carry. A column it cannot do
      without stops the load here — reading no rows and writing them over a
      period that already has some is how a good month disappears. */
+  if (kind === 'fbaInv' && !rows[0].some(h => String(h).trim().toLowerCase() === 'afn-fulfillable-quantity')) {
+    rows[0] = rows[0].map(h => INV_ALT[String(h).trim().toLowerCase()] || h);
+  }
   const miss = missingCols(kind, rows[0]);
   if (miss.req.length) {
     throw new Error('This ' + FILE_LABEL[kind] + ' has no ' +
@@ -23565,7 +23582,7 @@ async function handleFiles(fileList) {
         }
         msg = read.products + ' product(s) over ' + read.skus + ' SKU(s) \u00b7 <b>' +
           dayWithYear(read.at) + '</b>' +
-          (stamp.guessed ? ' \u2014 the file does not say when it was pulled, so today' : '') +
+          (stamp.guessed && !read.fromColumn ? ' \u2014 the file does not say when it was pulled, so today' : '') +
           (r.had ? ' \u00b7 replaces the snapshot from ' + dayWithYear(r.had) : '') +
           ' \u2014 this is the warehouse on one day, so it replaces what was here rather ' +
           'than adding to it';
