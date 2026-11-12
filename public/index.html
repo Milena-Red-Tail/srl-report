@@ -869,6 +869,7 @@ td.cell{cursor:pointer}
 td.cell:hover{background:var(--surface-2);box-shadow:inset 0 0 0 1px var(--ring)}
 tbody tr.on{background:var(--surface-2)}
 #rows tr.gfirst>td{border-top:2px solid var(--axis)}
+#rows tr.idle>td{color:var(--muted)}
 /* account health: a reading past its limit is red; the form is a grid of small labelled inputs */
 table.health td.hbad{color:var(--crit);font-weight:700}
 table.health th .grp{display:block;text-transform:none;letter-spacing:0;font-size:.62rem}
@@ -11944,6 +11945,57 @@ function groupedOrder(all) {
   };
 }
 
+/**
+ * Every product the report knows, for the Products Overview (Nov 2026).
+ *
+ * A by-ASIN pull only names what sold or was visited that period, so a product
+ * with a quiet month vanished from the table and a search for it found
+ * nothing — not even what it did the month before. The products on the
+ * Products page (this marketplace's) and every ASIN any pull ever named are
+ * added as rows of zero, with last period's revenue beside them and their
+ * history a click away. They sit at the end of the list and count nowhere
+ * else: the tiles and the Group overview stay what was sold.
+ */
+function withIdleRows(ds, rows, prevRows, range) {
+  /* a day's list (from All Orders) already names every product, in its own order */
+  if (!range || !range.from || !range.to || range.fromOrders) return rows;
+  const have = {};
+  rows.forEach(r => { have[r.asin] = 1; });
+  const titles = {};
+  Object.keys(ds.asin || {}).forEach(function (k) {
+    (ds.asin[k] || []).forEach(function (r) {
+      if (r && r.asin && !titles[r.asin]) titles[r.asin] = r.title || '';
+    });
+  });
+  const pmap = typeof prodNow === 'function' ? (prodNow(ds) || {}) : {};
+  const mk = ds.market ? String(ds.market).toUpperCase() : '';
+  Object.keys(pmap).forEach(function (a) {
+    const p = pmap[a];
+    const cty = p && p.raw && p.raw.Country ? String(p.raw.Country).trim().toUpperCase() : '';
+    if (cty && mk && cty !== mk) return;
+    /* bundles have a section of their own */
+    if (p && /bundle/i.test(p.group || '')) return;
+    if (!(a in titles)) titles[a] = (p && p.name) || '';
+  });
+  const want = Object.keys(titles).filter(a => a && a.charAt(0) !== '#' && !have[a] && /^[A-Z0-9]{10}$/i.test(a));
+  if (!want.length) return rows;
+  const fake = want.map(a => ({ asin: a, title: titles[a], sessions: 0, pageViews: 0, units: 0, sales: 0,
+                                orderItems: 0, buyBox: null, skus: [] }));
+  const prevBy = {};
+  (prevRows || []).forEach(p => { prevBy[p.asin] = p.sales; });
+  const idle = foldAsin(ds, fake, range.from, range.to).map(function (r) {
+    r.idle = true;
+    r.prevSales = prevRows ? (prevBy[r.asin] != null ? prevBy[r.asin] : null) : null;
+    r.salesDelta = deltaOf(0, r.prevSales);
+    r.oItems = null; r.snsItems = null; r.snsShare = null; r.snsSales = null; r.snsEst = false; r.convEx = null;
+    r.margin = r.margin; r.marginTotal = r.margin != null ? 0 : null;
+    r.tacos = null;
+    r.plan = typeof asinPlanFor === 'function' ? asinPlanFor(ds, r.asin, range.from, range.to) : null;
+    return r;
+  });
+  return rows.concat(idle);
+}
+
 function renderTable(all, shownRange, prevRange, info) {
   all = all.filter(r => statusOkFor('products', r));
   const q = (view.q || '').trim();
@@ -11957,6 +12009,8 @@ function renderTable(all, shownRange, prevRange, info) {
       if (typeof x === 'string') return x.localeCompare(y) * view.dir * -1;
       return ((x == null ? -Infinity : x) - (y == null ? -Infinity : y)) * view.dir;
     });
+  /* the products that sold nothing this period come after the ones that did, whatever the order */
+  if (matched.some(r => r.idle)) matched.splice(0, matched.length, ...matched.filter(r => !r.idle), ...matched.filter(r => r.idle));
 
   /* Searching means you are looking for something particular, so a search
      shows everything it found. It is only the resting state that is trimmed. */
@@ -11979,8 +12033,9 @@ function renderTable(all, shownRange, prevRange, info) {
     ' Click a number for its history.';
   document.getElementById('tableTitle').innerHTML =
     'Products Overview' + badge(shownRange.exact || (shownRange.spanned && !shownRange.loose && !(shownRange.gaps || []).length) ? '?' : '!',
-      '<b>' + (shownRange.from === shownRange.to ? dayWithYear(shownRange.from) : rangeLabel(shownRange.from, shownRange.to)) + '</b> · ' + all.length +
-      ' products. ' + note);
+      '<b>' + (shownRange.from === shownRange.to ? dayWithYear(shownRange.from) : rangeLabel(shownRange.from, shownRange.to)) + '</b> · ' + all.filter(r => !r.idle).length +
+      ' products' + (all.some(r => r.idle) ? ' with sales, plus ' + all.filter(r => r.idle).length +
+      ' with none this period (at the end of the list, and a search finds them)' : '') + '. ' + note);
 
   /* The groups come from the data, so the list is rebuilt when the data
      changes — but only then. Replacing the options on every keystroke would
@@ -12077,7 +12132,7 @@ function renderTable(all, shownRange, prevRange, info) {
   document.getElementById('rows').innerHTML = rows.map(function (r, i) {
     const isOpen = open && r.asin === open.asin;
     const gfirst = grouped && i > 0 && groupHome(rows[i - 1]) !== groupHome(r);
-    return '<tr data-a="' + r.asin + '" class="' + (isOpen ? 'on' : '') + (gfirst ? ' gfirst' : '') + '">' +
+    return '<tr data-a="' + r.asin + '" class="' + (isOpen ? 'on' : '') + (gfirst ? ' gfirst' : '') + (r.idle ? ' idle' : '') + '">' +
       cols.map(c => '<td class="cell' +
         (isOpen && onChart(open, c.m) && c.k !== 'name' ? ' picked' : '') +
         '" data-m="' + c.m + '">' + c.f(r) + '</td>').join('') + '</tr>' +
@@ -13397,7 +13452,7 @@ function renderPage() {
   none.hidden = !!rangeNow;
   if (rangeNow) {
     renderGroupTable(info, rows, null, hasSns(DS), rangePrev, rangeNow);
-    renderTable(rows, rangeNow, rangePrev, info);
+    renderTable(withIdleRows(DS, rows, prevRows, rangeNow), rangeNow, rangePrev, info);
   } else {
     document.getElementById('grouptable').hidden = true;
     const anyPull = asinRanges(DS).length;
@@ -15679,8 +15734,17 @@ const isFaultReason = code => RETURN_FAULT.indexOf(canonReturnReason(code)) >= 0
  * same days — the ones the Business Report covers — and the page says how
  * many days that is whenever it is fewer than the span asked about.
  */
+/** The first day any returns file covers: before it there is no knowing what came back. */
+function returnsFirstDay() {
+  let f = null;
+  RETURN_CHANNELS.forEach(function (c) { const k = Object.keys(((DS.returns || {})[c.id]) || {}).sort()[0]; if (k && (!f || k < f)) f = k; });
+  return f;
+}
 function returnRateOver(from, to) {
-  const days = dailyList(DS).filter(d => d.date >= from && d.date <= to);
+  /* only the days a returns file covers: last year's months before the first
+     return on file are not "0 returned" (Nov 2026, Rapid: 2025 read 0.0%, 0 of 58) */
+  const first = returnsFirstDay();
+  const days = dailyList(DS).filter(d => d.date >= from && d.date <= to && (!first || d.date >= first));
   const span = Math.round((fromKey(to) - fromKey(from)) / 86400000) + 1;
   if (!days.length) return { rate: null, sold: null, units: null, days: 0, span: span, full: false };
   let sold = 0;
