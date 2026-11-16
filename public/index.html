@@ -3551,7 +3551,8 @@ function readCogsRows(objs) {
        product file is not a place to store a hundred columns of notes. */
     const raw = {};
     Object.keys(o).slice(0, 60).forEach(function (c) {
-      if (c && o[c] != null && o[c] !== '') raw[c] = String(o[c]);
+      /* the download's picture column is drawn, not data */
+      if (c && c !== 'Image preview' && o[c] != null && o[c] !== '') raw[c] = String(o[c]);
     });
     const sku = [o['SKU'], o['Core SKU']]
       .find(v => v != null && String(v).trim() !== '');
@@ -17768,13 +17769,23 @@ function stylesXml() {
 }
 
 /** One sheet's XML from column names and row objects; a number stays a number. */
-function sheetXml(cols, rows, tableId, money) {
+function sheetXml(cols, rows, tableId, money, pics) {
   money = money || {};
   const cell = function (c, r, v, zebra) {
     const ref = colRef(c) + r;
     const status = cols[c] === 'Status' && XL_STATUS_ORDER.indexOf(String(v)) >= 0;
     if (status) {
       return '<c r="' + ref + '" s="' + (XF.status + XL_STATUS_ORDER.indexOf(String(v))) + '" t="inlineStr"><is><t>' + xmlEsc(v) + '</t></is></c>';
+    }
+    /* a formula, with the page's own answer cached beside it */
+    if (v && typeof v === 'object' && v.f) {
+      const z = zebra;
+      if (typeof v.v === 'number' && isFinite(v.v)) {
+        const dec = Math.round(v.v) !== v.v || /daily/i.test(cols[c]);
+        return '<c r="' + ref + '" s="' + (dec ? (z ? XF.decZ : XF.dec) : (z ? XF.intZ : XF.int)) + '"><f>' + xmlEsc(v.f) + '</f><v>' + v.v + '</v></c>';
+      }
+      const st = cols[c] === 'Status' && XL_STATUS_ORDER.indexOf(String(v.v)) >= 0 ? XF.status + XL_STATUS_ORDER.indexOf(String(v.v)) : (z ? XF.textZ : XF.text);
+      return '<c r="' + ref + '" s="' + st + '" t="str"><f>' + xmlEsc(v.f) + '</f><v>' + xmlEsc(v.v == null ? '' : v.v) + '</v></c>';
     }
     if (typeof v === 'number' && isFinite(v) && money[cols[c]]) {
       /* money, with its sign: whole amounts as whole, the rest to the cent */
@@ -17795,11 +17806,12 @@ function sheetXml(cols, rows, tableId, money) {
     '<c r="' + colRef(i) + '1" s="' + (XL_FILLIN.indexOf(h) >= 0 ? XF.fillin : XF.header) + '" t="inlineStr"><is><t>' + xmlEsc(h) + '</t></is></c>').join('') + '</row>'];
   rows.forEach(function (row, ri) {
     const zebra = ri % 2 === 1;
-    lines.push('<row r="' + (ri + 2) + '" ht="20" customHeight="1">' + cols.map((h, i) => cell(i, ri + 2, row[h], zebra)).join('') + '</row>');
+    /* a sheet with pictures (Nov 2026): rows tall enough to see the product */
+    lines.push('<row r="' + (ri + 2) + '" ht="' + (pics ? 60 : 20) + '" customHeight="1">' + cols.map((h, i) => cell(i, ri + 2, row[h], zebra)).join('') + '</row>');
   });
   /* the widths: a name column reads badly at eight characters */
   const widths = cols.map((h, i) => '<col min="' + (i + 1) + '" max="' + (i + 1) + '" width="' +
-    (/^product$|upcoming|sku|tracking/i.test(h) ? 34 : /^asin$/i.test(h) ? 14 : Math.max(11, Math.min(24, String(h).length + 3))) + '" customWidth="1"/>').join('');
+    (pics && h === pics ? 11 : /^product$|upcoming|sku|tracking/i.test(h) ? 34 : /^asin$/i.test(h) ? 14 : Math.max(11, Math.min(24, String(h).length + 3))) + '" customWidth="1"/>').join('');
   const ref = 'A1:' + colRef(cols.length - 1) + (rows.length + 1);
   return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
     '<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ' +
@@ -17854,7 +17866,7 @@ function makeXlsx(sheets) {
     '</Relationships>' });
   files.push({ name: 'xl/styles.xml', text: stylesXml() });
   sheets.forEach(function (s, i) {
-    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1, s.money) });
+    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1, s.money, s.pics) });
     /* an Excel table needs at least one row under its header, so an empty
        shipment sheet is left as plain cells */
     if (!s.rows.length) return;
@@ -21467,7 +21479,7 @@ function wireProducts(box, t, pc) {
     setTimeout(function () { document.addEventListener('click', function once() { document.removeEventListener('click', once); window._pfClose = false; if (PRODUCTS_FILTER_OPEN) { PRODUCTS_FILTER_OPEN = false; renderProducts(); } }); }, 0);
   }
   const dlTop = document.getElementById('productsDl');
-  if (dlTop) dlTop.onclick = function () { downloadCsv(brandSlugName() + '-product-data.csv', productCsv()); };
+  if (dlTop) dlTop.onclick = function () { downloadCsv(brandSlugName() + '-product-data.csv', productCsv(true)); };
   box.querySelectorAll('button.pdelrow').forEach(function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
@@ -21587,7 +21599,7 @@ function renderProductsBar() {
 }
 
 /** The table with its edits as the product-data CSV — what Save reads back and Download hands out. */
-function productCsv() {
+function productCsv(preview) {
   const t = productTable();
   const pc = productColumns(t);
   /* the columns the page keeps off the table go back into the file: a date
@@ -21611,6 +21623,16 @@ function productCsv() {
     return o;
   });
   if (cols.indexOf('Status') < 0) cols.push('Status');
+  /* The download only (Nov 2026): an "Image preview" column beside Image, as
+     =IMAGE("…") so Excel and Google Sheets draw the main picture. Save never
+     writes it, and the reader leaves the column out when the file comes back. */
+  if (preview && cols.indexOf('Image') >= 0) {
+    cols.splice(cols.indexOf('Image') + 1, 0, 'Image preview');
+    rows.forEach(function (o) {
+      const u = String(o['Image'] || '').split(/[;,]\s*/)[0].trim();
+      o['Image preview'] = /^https?:\/\/[^\s"]+$/i.test(u) ? '=IMAGE("' + u + '")' : '';
+    });
+  }
   return cogsCsvOf(cols, rows);
 }
 
@@ -23107,7 +23129,24 @@ function tdlSheet(t, title) {
   /* columns with no heading and nothing in them (the grip, a delete mark) are left out */
   const keep = cols.filter((h, i) => !/^Column \d+$|^Name$/.test(h) || rows.some(r => r[h] !== '' && r[h] != null));
   const money = {}; Object.keys(moneyCol).forEach(h => { if (!pctCol[h]) money[h] = 1; });
-  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows, money: money };
+  /* The product's main picture (Nov 2026: "da se u fajlu vide main slike
+     proizvoda"): a row showing a picture gets it in the file as Excel's
+     IMAGE() of the same address — in the table's own Image column where it
+     has one (the Products page), otherwise in a column of its own at the front. */
+  const picOf = function (tr) {
+    const im = tr.querySelector('img.pimg, td.pimg img, img.dpic');
+    let u = im ? (im.getAttribute('src') || '') : '';
+    if (!/^https?:\/\//i.test(u)) { const inp = tr.querySelector('input.pimgurl'); u = inp ? inp.value.split(/[;,]\s*/)[0].trim() : ''; }
+    return /^https?:\/\/[^\s"]+$/i.test(u) ? u : '';
+  };
+  const urls = body.map(picOf);
+  let pics = null;
+  if (urls.some(Boolean)) {
+    pics = keep.indexOf('Image') >= 0 ? 'Image' : 'Picture';
+    if (pics === 'Picture') keep.unshift('Picture');
+    rows.forEach(function (o, i) { o[pics] = urls[i] ? { f: '_xlfn.IMAGE("' + urls[i] + '")', v: '' } : ''; });
+  }
+  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows, money: money, pics: pics };
 }
 
 /** What the table is called: the heading of the card it sits in. */
