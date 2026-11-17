@@ -6058,8 +6058,38 @@ function mergeDataset(ds, inc) {
     if (!ds.orders[k]) ds.orders[k] = inc.orders[k];
   });
   Object.keys(inc.asin || {}).forEach(function (k) {
-    if (!ds.asin[k]) { ds.asin[k] = inc.asin[k]; wins++; }
+    if (!ds.asin[k]) {
+      ds.asin[k] = inc.asin[k]; wins++;
+      /* the window's pull time comes with it */
+      if (inc.asinAt && inc.asinAt[k] != null) { ds.asinAt = ds.asinAt || {}; ds.asinAt[k] = inc.asinAt[k]; }
+    }
   });
+  /* Nov 2026: a page copy carries the whole document. Advertising by product
+     (by day), the campaigns' branded flags and the Products page's QC targets
+     were left behind, so a brand moved to a new project lost its per-product
+     ad figures. Fill only, like everything else here. */
+  if (inc.adAsin) {
+    ds.adAsin = ds.adAsin || {};
+    Object.keys(inc.adAsin).forEach(function (d) { if (!ds.adAsin[d]) ds.adAsin[d] = inc.adAsin[d]; });
+  }
+  if (inc.campaigns) ds.campaigns = Object.assign({}, inc.campaigns, ds.campaigns || {});
+  if (inc.qcWant) ds.qcWant = Object.assign({}, inc.qcWant, ds.qcWant || {});
+  /* the vendor exports travel too: purchase orders and their lines (fill
+     only, per PO), which exports each by-ASIN window was built from, and the
+     inventory snapshot — the newer of the two */
+  if (inc.po) {
+    ds.po = ds.po || {};
+    Object.keys(inc.po).forEach(function (k) { if (!ds.po[k]) ds.po[k] = inc.po[k]; });
+  }
+  if (inc.poLines) {
+    ds.poLines = ds.poLines || {};
+    Object.keys(inc.poLines).forEach(function (k) { if (!ds.poLines[k]) ds.poLines[k] = inc.poLines[k]; });
+  }
+  if (inc.asinSrc) {
+    ds.asinSrc = ds.asinSrc || {};
+    Object.keys(inc.asinSrc).forEach(function (k) { if (!ds.asinSrc[k]) ds.asinSrc[k] = inc.asinSrc[k]; });
+  }
+  if (inc.vinv && inc.vinv.at && (!ds.vinv || !ds.vinv.at || inc.vinv.at > ds.vinv.at)) ds.vinv = inc.vinv;
   Object.keys(inc.cogs || {}).forEach(function (k) {
     if (!ds.cogs[k]) { ds.cogs[k] = inc.cogs[k]; costs++; }
   });
