@@ -516,6 +516,12 @@ header{position:sticky;top:0;z-index:20;background:var(--plane);
 .tdl{display:flex;justify-content:flex-end;margin:0 0 3px;height:20px}
 .tdlbtn{border:0;background:none;color:var(--ink-3);cursor:pointer;padding:2px 4px;border-radius:6px;line-height:0}
 .tdlbtn:hover{color:var(--s1);background:color-mix(in srgb,var(--s1) 10%,transparent)}
+.dlask{position:fixed;inset:0;z-index:9999;background:rgba(0,0,0,.28);display:flex;align-items:center;justify-content:center;padding:16px}
+.dlaskcard{background:var(--surface,#fff);color:var(--ink,#111);border-radius:12px;box-shadow:0 12px 40px rgba(0,0,0,.25);padding:18px 20px;max-width:380px;width:100%;font-size:.9rem}
+.dlaskcard p{margin:8px 0 14px;color:var(--ink-3,#555);font-size:.82rem;line-height:1.4}
+.dlaskbtns{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.dlaskprog{margin-top:6px;font-size:.82rem;color:var(--ink-3,#555)}
+@media print{.dlask{display:none!important}}
 @media print{.tdl{display:none!important}}
 .qimgrow{display:flex;align-items:center;gap:8px;flex-wrap:nowrap;padding:2px 0}
 .qstrip.mini.one{grid-auto-rows:46px}
@@ -17663,7 +17669,7 @@ function zipStored(files) {
   const le16 = n => [n & 255, (n >>> 8) & 255];
   const le32 = n => [n & 255, (n >>> 8) & 255, (n >>> 16) & 255, (n >>> 24) & 255];
   files.forEach(function (f) {
-    const name = enc.encode(f.name), data = enc.encode(f.text);
+    const name = enc.encode(f.name), data = f.data instanceof Uint8Array ? f.data : enc.encode(f.text);
     const crc = crc32(data);
     const head = new Uint8Array([].concat(
       le32(0x04034b50), le16(20), le16(0), le16(0), le16(0), le16(0x21),
@@ -17769,7 +17775,7 @@ function stylesXml() {
 }
 
 /** One sheet's XML from column names and row objects; a number stays a number. */
-function sheetXml(cols, rows, tableId, money, pics) {
+function sheetXml(cols, rows, tableId, money, pics, drawing) {
   money = money || {};
   const cell = function (c, r, v, zebra) {
     const ref = colRef(c) + r;
@@ -17819,8 +17825,28 @@ function sheetXml(cols, rows, tableId, money, pics) {
     '<sheetViews><sheetView workbookViewId="0" showGridLines="0"><pane ySplit="1" topLeftCell="A2" activePane="bottomLeft" state="frozen"/></sheetView></sheetViews>' +
     '<sheetFormatPr defaultRowHeight="15"/>' +
     '<cols>' + widths + '</cols><sheetData>' + lines.join('') + '</sheetData>' +
+    (drawing ? '<drawing r:id="rId2"/>' : '') +
     (rows.length ? '<tableParts count="1"><tablePart r:id="rId1"/></tableParts>' : '') +
     '</worksheet>';
+}
+
+/** The pictures over a sheet: each in its cell (row, col counted from 0, the header being row 0), w × h pixels. */
+function drawingXml(imgs) {
+  const E = 9525;
+  return '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+    '<xdr:wsDr xmlns:xdr="http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing" ' +
+    'xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main" ' +
+    'xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">' +
+    imgs.map(function (im, k) {
+      const cx = Math.round(im.w * E), cy = Math.round(im.h * E);
+      return '<xdr:oneCellAnchor><xdr:from><xdr:col>' + im.col + '</xdr:col><xdr:colOff>' + Math.round((im.dx || 4) * E) + '</xdr:colOff>' +
+        '<xdr:row>' + im.row + '</xdr:row><xdr:rowOff>' + Math.round((im.dy || 4) * E) + '</xdr:rowOff></xdr:from>' +
+        '<xdr:ext cx="' + cx + '" cy="' + cy + '"/>' +
+        '<xdr:pic><xdr:nvPicPr><xdr:cNvPr id="' + (k + 2) + '" name="Picture ' + (k + 1) + '"/><xdr:cNvPicPr><a:picLocks noChangeAspect="1"/></xdr:cNvPicPr></xdr:nvPicPr>' +
+        '<xdr:blipFill><a:blip r:embed="rIdImg' + (k + 1) + '"/><a:stretch><a:fillRect/></a:stretch></xdr:blipFill>' +
+        '<xdr:spPr><a:xfrm><a:off x="0" y="0"/><a:ext cx="' + cx + '" cy="' + cy + '"/></a:xfrm><a:prstGeom prst="rect"><a:avLst/></a:prstGeom></xdr:spPr></xdr:pic>' +
+        '<xdr:clientData/></xdr:oneCellAnchor>';
+    }).join('') + '</xdr:wsDr>';
 }
 
 /** The Excel table over a sheet's cells — filter arrows and a name Excel knows the range by. */
@@ -17842,10 +17868,12 @@ function makeXlsx(sheets) {
     '<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">' +
     '<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>' +
     '<Default Extension="xml" ContentType="application/xml"/>' +
+    (sheets.some(s => s.images && s.images.length) ? '<Default Extension="jpeg" ContentType="image/jpeg"/>' : '') +
     '<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>' +
     '<Override PartName="/xl/styles.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.styles+xml"/>' +
     sheets.map((s, i) => '<Override PartName="/xl/worksheets/sheet' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>' +
-      (s.rows.length ? '<Override PartName="/xl/tables/table' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>' : '')).join('') +
+      (s.rows.length ? '<Override PartName="/xl/tables/table' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.table+xml"/>' : '') +
+      (s.images && s.images.length ? '<Override PartName="/xl/drawings/drawing' + (i + 1) + '.xml" ContentType="application/vnd.openxmlformats-officedocument.drawing+xml"/>' : '')).join('') +
     '</Types>' });
   files.push({ name: '_rels/.rels', text:
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
@@ -17866,15 +17894,28 @@ function makeXlsx(sheets) {
     '</Relationships>' });
   files.push({ name: 'xl/styles.xml', text: stylesXml() });
   sheets.forEach(function (s, i) {
-    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1, s.money, s.pics) });
+    const imgs = s.images && s.images.length ? s.images : null;
+    files.push({ name: 'xl/worksheets/sheet' + (i + 1) + '.xml', text: sheetXml(s.cols, s.rows, i + 1, s.money, s.pics, !!imgs) });
+    /* the pictures (Nov 2026): each product's own, sitting in its cell */
+    if (imgs) {
+      files.push({ name: 'xl/drawings/drawing' + (i + 1) + '.xml', text: drawingXml(imgs) });
+      files.push({ name: 'xl/drawings/_rels/drawing' + (i + 1) + '.xml.rels', text:
+        '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
+        '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
+        imgs.map((im, k) => '<Relationship Id="rIdImg' + (k + 1) + '" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/image" Target="../media/s' + (i + 1) + 'img' + (k + 1) + '.jpeg"/>').join('') +
+        '</Relationships>' });
+      imgs.forEach((im, k) => files.push({ name: 'xl/media/s' + (i + 1) + 'img' + (k + 1) + '.jpeg', data: im.bytes }));
+    }
     /* an Excel table needs at least one row under its header, so an empty
        shipment sheet is left as plain cells */
-    if (!s.rows.length) return;
+    if (!s.rows.length && !imgs) return;
     files.push({ name: 'xl/worksheets/_rels/sheet' + (i + 1) + '.xml.rels', text:
       '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>' +
       '<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">' +
-      '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table' + (i + 1) + '.xml"/>' +
+      (s.rows.length ? '<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/table" Target="../tables/table' + (i + 1) + '.xml"/>' : '') +
+      (imgs ? '<Relationship Id="rId2" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/drawing" Target="../drawings/drawing' + (i + 1) + '.xml"/>' : '') +
       '</Relationships>' });
+    if (!s.rows.length) return;
     files.push({ name: 'xl/tables/table' + (i + 1) + '.xml',
       text: tableXml(s.name.replace(/[^A-Za-z0-9]/g, '') || ('Table' + (i + 1)), s.cols, s.rows, i + 1) });
   });
@@ -21479,7 +21520,14 @@ function wireProducts(box, t, pc) {
     setTimeout(function () { document.addEventListener('click', function once() { document.removeEventListener('click', once); window._pfClose = false; if (PRODUCTS_FILTER_OPEN) { PRODUCTS_FILTER_OPEN = false; renderProducts(); } }); }, 0);
   }
   const dlTop = document.getElementById('productsDl');
-  if (dlTop) dlTop.onclick = function () { downloadCsv(brandSlugName() + '-product-data.csv', productCsv(true)); };
+  if (dlTop) dlTop.onclick = async function () {
+    /* asked first (Nov 2026): with the picture preview column or without */
+    const t = productTable();
+    const any = t.cols.indexOf('Image') >= 0 && t.rows.some(r => /^https?:\/\//i.test(String(r['Image'] || '').trim()));
+    const withPic = any ? await dlAskPictures('csv') : false;
+    if (withPic == null) return;
+    downloadCsv(brandSlugName() + '-product-data.csv', productCsv(withPic));
+  };
   box.querySelectorAll('button.pdelrow').forEach(function (b) {
     b.onclick = function (e) {
       e.stopPropagation();
@@ -23057,7 +23105,8 @@ function tdlValue(s) {
 }
 
 /** The table as { name, cols, rows } — what makeXlsx writes. */
-function tdlSheet(t, title) {
+function tdlSheet(t, title, opts) {
+  opts = opts || {};
   const heads = tdlHeadCells(t);
   /* the columns are named as their headings read, each once (Excel will not open a table with two of a name) */
   const seen = {};
@@ -23109,8 +23158,10 @@ function tdlSheet(t, title) {
           if (el) el.remove();
         });
       }
-      const raw = tdlCellText(src);
-      const x = i === 0 ? { v: raw } : tdlValue(raw);
+      /* the Products page's Image cell: the address typed in it */
+      const iu = src.classList && src.classList.contains('pimg') ? src.querySelector('input.pimgurl') : null;
+      const raw = iu ? iu.value.trim() : tdlCellText(src);
+      const x = (i === 0 || iu) ? { v: raw } : tdlValue(raw);
       if (x.pct) pctCol[cols[i]] = 1;
       if (x.money) moneyCol[cols[i]] = 1;
       o[cols[i]] = x.v;
@@ -23130,9 +23181,11 @@ function tdlSheet(t, title) {
   const keep = cols.filter((h, i) => !/^Column \d+$|^Name$/.test(h) || rows.some(r => r[h] !== '' && r[h] != null));
   const money = {}; Object.keys(moneyCol).forEach(h => { if (!pctCol[h]) money[h] = 1; });
   /* The product's main picture (Nov 2026: "da se u fajlu vide main slike
-     proizvoda"): a row showing a picture gets it in the file as Excel's
-     IMAGE() of the same address — in the table's own Image column where it
-     has one (the Products page), otherwise in a column of its own at the front. */
+     proizvoda"): a table showing pictures gets a Picture column at the front.
+     The picture itself is put into the file by tdlAddPictures (fetched, made
+     small, embedded — no IMAGE() formula Excel blocks); until then, and for a
+     picture that could not be fetched, the cell holds IMAGE() of the address.
+     Asked for without pictures (opts.pics === false), there is no column. */
   const picOf = function (tr) {
     const im = tr.querySelector('img.pimg, td.pimg img, img.dpic');
     let u = im ? (im.getAttribute('src') || '') : '';
@@ -23141,12 +23194,13 @@ function tdlSheet(t, title) {
   };
   const urls = body.map(picOf);
   let pics = null;
-  if (urls.some(Boolean)) {
-    pics = keep.indexOf('Image') >= 0 ? 'Image' : 'Picture';
-    if (pics === 'Picture') keep.unshift('Picture');
-    rows.forEach(function (o, i) { o[pics] = urls[i] ? { f: '_xlfn.IMAGE("' + urls[i] + '")', v: '' } : ''; });
+  if (urls.some(Boolean) && opts.pics !== false) {
+    pics = 'Picture';
+    keep.unshift('Picture');
+    rows.forEach(function (o, i) { o.Picture = urls[i] ? { f: '_xlfn.IMAGE("' + urls[i] + '")', v: '' } : ''; });
   }
-  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows, money: money, pics: pics };
+  return { name: (title || 'Table').replace(/[\[\]:*?\/\\]/g, ' ').slice(0, 31), cols: keep, rows: rows, money: money, pics: pics,
+           picUrls: pics ? urls : null, hasPics: urls.some(Boolean) };
 }
 
 /** What the table is called: the heading of the card it sits in. */
@@ -23158,15 +23212,128 @@ function tdlTitle(t) {
   return (s ? s.textContent : '').replace(/\s+/g, ' ').trim() || 'Table';
 }
 
-function tdlDownload(t) {
+async function tdlDownload(t, withPics) {
   const title = tdlTitle(t);
-  const sheet = tdlSheet(t, title);
+  /* a table showing pictures asks first: with the picture column or without (Nov 2026) */
+  if (withPics == null && tdlSheet(t, title, { pics: false }).hasPics) {
+    withPics = await dlAskPictures('xlsx');
+    if (withPics == null) return null;
+  }
+  const sheet = tdlSheet(t, title, { pics: withPics !== false });
+  if (sheet.pics) await tdlAddPictures(sheet);
   const per = (typeof _info !== 'undefined' && _info && _info.label) ? '-' + _info.label : '';
   const slug = s => String(s).toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
   const name = (typeof brandSlugName === 'function' ? brandSlugName() : 'report') + '-' + slug(title) + (per ? '-' + slug(per) : '') + '.xlsx';
+  dlAskDone();
   downloadBlob(name, makeXlsx([sheet]));
   return { name: name, sheet: sheet };
 }
+
+/* ---------- the pictures, put into the file ----------
+ * Excel's IMAGE() fetches each picture when the file is opened, and a file
+ * from the internet opens with that blocked ("BLOCKED" until each cell is
+ * entered again). So the page fetches the pictures itself, makes each a small
+ * JPEG on a white ground and puts it into the workbook, sitting in its row's
+ * Picture cell. An Amazon address is asked for at 160px rather than the full
+ * size. A picture that cannot be fetched keeps the IMAGE() formula. */
+const TDL_PIC = 72;
+function picSmallUrl(u) {
+  const m = /^(https:\/\/m\.media-amazon\.com\/images\/I\/[^./?]+)(?:\.[^/?]*)?\.(jpe?g|png|gif|webp)(\?.*)?$/i.exec(u);
+  return m ? m[1] + '._SL160_.' + m[2] : u;
+}
+async function picJpeg(u) {
+  const ctl = typeof AbortController !== 'undefined' ? new AbortController() : null;
+  const timer = ctl ? setTimeout(() => ctl.abort(), 10000) : null;
+  try {
+    let r = await fetch(picSmallUrl(u), { mode: 'cors', signal: ctl && ctl.signal }).catch(() => null);
+    if ((!r || !r.ok) && picSmallUrl(u) !== u) r = await fetch(u, { mode: 'cors', signal: ctl && ctl.signal }).catch(() => null);
+    if (!r || !r.ok) return null;
+    const blob = await r.blob();
+    const src = URL.createObjectURL(blob);
+    const img = await new Promise(function (res) { const im = new Image(); im.onload = () => res(im); im.onerror = () => res(null); im.src = src; });
+    URL.revokeObjectURL(src);
+    if (!img || !img.naturalWidth) return null;
+    const S = TDL_PIC * 2;
+    const k = Math.min(S / img.naturalWidth, S / img.naturalHeight, 1);
+    const w = Math.max(1, Math.round(img.naturalWidth * k)), h = Math.max(1, Math.round(img.naturalHeight * k));
+    const c = document.createElement('canvas'); c.width = w; c.height = h;
+    const g = c.getContext('2d'); g.fillStyle = '#fff'; g.fillRect(0, 0, w, h); g.drawImage(img, 0, 0, w, h);
+    const out = await new Promise(res => c.toBlob(res, 'image/jpeg', 0.85));
+    if (!out) return null;
+    return { bytes: new Uint8Array(await out.arrayBuffer()), w: w, h: h };
+  } catch (e) { return null; } finally { if (timer) clearTimeout(timer); }
+}
+async function tdlAddPictures(sheet) {
+  const urls = sheet.picUrls || [];
+  const col = sheet.cols.indexOf(sheet.pics);
+  const got = new Array(urls.length).fill(null);
+  const cache = {};
+  let next = 0, done = 0;
+  const todo = urls.filter(Boolean).length;
+  async function worker() {
+    while (next < urls.length) {
+      const i = next++;
+      if (!urls[i]) continue;
+      if (!(urls[i] in cache)) cache[urls[i]] = picJpeg(urls[i]);
+      got[i] = await cache[urls[i]];
+      dlAskProgress(++done, todo);
+    }
+  }
+  await Promise.all([1, 2, 3, 4, 5, 6].map(worker));
+  sheet.images = [];
+  got.forEach(function (p, i) {
+    if (!p) return;
+    /* fitted inside the cell: 72px on its long side, centred in a cell ~80px across */
+    const k = TDL_PIC / Math.max(p.w, p.h);
+    const w = Math.round(p.w * k), h = Math.round(p.h * k);
+    sheet.images.push({ row: i + 1, col: col, bytes: p.bytes, w: w, h: h, dx: 4 + (TDL_PIC - w) / 2, dy: 4 + (TDL_PIC - h) / 2 });
+    sheet.rows[i][sheet.pics] = '';
+  });
+  sheet.picMissing = urls.filter(Boolean).length - sheet.images.length;
+  return sheet;
+}
+
+/* ---------- the question before a download with pictures ---------- */
+let _dlAsk = null;
+function dlAskPictures(kind) {
+  return new Promise(function (resolve) {
+    dlAskDone();
+    const box = document.createElement('div');
+    box.className = 'dlask';
+    box.innerHTML = '<div class="dlaskcard" role="dialog" aria-modal="true" aria-label="Download">' +
+      '<b>Include the product picture?</b>' +
+      '<p>' + (kind === 'csv'
+        ? 'Adds an <i>Image preview</i> column that shows each product\'s main picture in Excel 365 and Google Sheets. In a CSV it is a formula, so Excel may show it only after editing is enabled.'
+        : 'Adds a <i>Picture</i> column at the front with each product\'s main picture, put into the file itself.') + '</p>' +
+      '<div class="dlaskbtns"><button type="button" class="btn primary" data-a="yes">With picture</button>' +
+      '<button type="button" class="btn" data-a="no">Without</button>' +
+      '<button type="button" class="linky" data-a="cancel">Cancel</button></div>' +
+      '<div class="dlaskprog" hidden></div></div>';
+    document.body.appendChild(box);
+    _dlAsk = box;
+    const finish = function (v) {
+      document.removeEventListener('keydown', esc, true);
+      if (v === true && kind !== 'csv') {
+        box.querySelector('.dlaskbtns').hidden = true;
+        const pr = box.querySelector('.dlaskprog'); pr.hidden = false; pr.textContent = 'Getting the pictures…';
+      } else dlAskDone();
+      resolve(v);
+    };
+    const esc = function (e) { if (e.key === 'Escape') { e.preventDefault(); finish(null); } };
+    document.addEventListener('keydown', esc, true);
+    box.addEventListener('click', function (e) {
+      const b = e.target.closest('button[data-a]');
+      if (b) finish(b.dataset.a === 'yes' ? true : b.dataset.a === 'no' ? false : null);
+      else if (e.target === box) finish(null);
+    });
+    box.querySelector('button[data-a="yes"]').focus();
+  });
+}
+function dlAskProgress(n, of) {
+  const pr = _dlAsk && _dlAsk.querySelector('.dlaskprog');
+  if (pr) pr.textContent = 'Getting the pictures… ' + n + ' of ' + of;
+}
+function dlAskDone() { if (_dlAsk) { _dlAsk.remove(); _dlAsk = null; } }
 
 /** Puts the mark over every table that has none — after each drawing, whatever drew it. */
 function tdlMark() {
