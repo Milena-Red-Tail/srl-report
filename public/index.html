@@ -7824,6 +7824,9 @@ function runChecks(ds) {
     ' product(s) show no margin — no landed cost in the product-data file: ' +
     noCogs.slice(0, 5).join(', ') + (noCogs.length > 5 ? '…' : '') + '.' });
 
+  const big = reportSizeCheck(ds);
+  if (big) out.push(big);
+
   if (!out.length) out.push({ level: 'ok', text: 'All checks passed.' });
   return out;
 }
@@ -7842,6 +7845,77 @@ function productShownNow(ds, asin) {
 var _statusPred = null;
 /* the predicate is rebuilt when a product sheet is loaded: the sheets' dates are its fingerprint */
 function _statusStamp(ds) { return Object.keys((ds && ds.cogsAt) || {}).join('|') + ':' + Object.keys((ds && ds.cogsAt) || {}).map(d => Object.keys(ds.cogsAt[d]).length).join(','); }
+
+/* how this build's project sends and keeps the report: 'raw' or 'packed' (in parts) */
+const SIZE_MODE = 'raw', SIZE_SAVE_MAX = null;
+/* ---------- is the report getting too big? (Nov 2026) ----------
+ * The whole report is one document: the site sends all of it every time the
+ * report is opened and receives all of it on every save. A brand whose
+ * project answers plainly ('raw') can be sent about 20 MB (Netlify streams
+ * the answer; CountryMax opened at 10 MB that way) — past that the report
+ * opens empty, with no other sign. One whose project answers packed
+ * and in parts ('packed': CountryMax, KetoChow) has no such wall, but opens
+ * more slowly as the document grows. The check in the band says when that
+ * point is near, how much of the document Order detail (All Orders, kept line
+ * by line, nearly all of the growth) is, what a month of it weighs, and where
+ * its oldest months can be removed; and a save that would put the report past
+ * what the site can keep is refused before it is sent. */
+const SIZE_MB = 1048576;
+const SIZE_RULES = SIZE_MODE === 'packed'
+  ? { warn: 16 * SIZE_MB, bad: 40 * SIZE_MB, max: SIZE_SAVE_MAX }
+  : { warn: 14 * SIZE_MB, bad: 17 * SIZE_MB, max: 19 * SIZE_MB };
+/* the packed size the last open or save measured (packed projects) */
+var REPORT_PACKED = null;
+function mb(n) { return (n / SIZE_MB).toFixed(n < 10 * SIZE_MB ? 1 : 0) + ' MB'; }
+/** The document the site keeps: every country, the whole account. */
+function reportDoc(ds) {
+  if (typeof docOut === 'function') { try { return docOut(); } catch (e) { /* the page before boot */ } }
+  return typeof rawDs === 'function' && rawDs() ? rawDs() : ds;
+}
+function reportSize(ds) {
+  const raw = JSON.stringify(reportDoc(ds)).length;
+  return { raw: raw, measured: SIZE_MODE === 'packed' ? (REPORT_PACKED || raw / 4) : raw };
+}
+function reportSizeAdvice(doc, raw) {
+  const all = [doc].concat(doc && doc.markets ? Object.keys(doc.markets).map(c => doc.markets[c]) : []);
+  let ord = 0; const months = {};
+  all.forEach(function (d) {
+    if (!d || !d.orders) return;
+    ord += JSON.stringify(d.orders).length;
+    Object.keys(d.orders).forEach(k => { months[k.slice(0, 7)] = 1; });
+  });
+  const ms = Object.keys(months).sort();
+  if (ord > raw / 3 && ms.length) {
+    const o = fromKey(ms[0] + '-01');
+    return ' Order detail is ' + mb(ord) + ' of it, about ' + mb(ord / ms.length) + ' raw a month. To make room, remove its oldest months under ' +
+      '<b>What is loaded → Order detail (Subscribe &amp; Save)</b>, from ' + DMON[o.getMonth()] + ' ' + o.getFullYear() +
+      ' on — download a month first if you want to keep it. Sales and products for those months stay, from the daily and Sales by ASIN exports.';
+  }
+  return ' Remove the oldest months of whatever is largest under <b>What is loaded</b> — download them first if you want to keep them.';
+}
+function reportSizeCheck(ds) {
+  const sz = reportSize(ds);
+  if (sz.measured < SIZE_RULES.warn) return null;
+  const bad = sz.measured >= SIZE_RULES.bad;
+  const head = SIZE_MODE === 'packed'
+    ? 'The report is <b>' + mb(sz.measured) + ' packed</b> (' + mb(sz.raw) + ' raw)' +
+      (bad ? (SIZE_RULES.max ? ' — at ' + mb(SIZE_RULES.max) + ' it can no longer be saved.' : ' — it is getting close to what the site can keep.')
+           : ' and opens more slowly as it grows.')
+    : 'The report is <b>' + mb(sz.raw) + '</b>. The site can send about 20 MB when the report is opened; past that it opens empty' +
+      (bad ? ' — and this is close.' : '.');
+  return { level: bad ? 'bad' : 'warn', text: head + reportSizeAdvice(reportDoc(ds), sz.raw) };
+}
+/** Why a save must not go, in words — or null. `packed` is the body about to be sent. */
+function reportSizeRefusal(ds, packed) {
+  if (!SIZE_RULES.max) return null;
+  const doc = reportDoc(ds);
+  const raw = JSON.stringify(doc).length;
+  const size = SIZE_MODE === 'packed' ? packed : raw;
+  if (size <= SIZE_RULES.max) return null;
+  return 'the report would be ' + mb(size) + (SIZE_MODE === 'packed' ? ' packed' : '') + ', more than the ' + mb(SIZE_RULES.max) +
+    ' the site can ' + (SIZE_MODE === 'packed' ? 'keep' : 'send back when it is opened') + ', so it was not sent.' +
+    reportSizeAdvice(doc, raw).replace(/<[^>]*>/g, '').replace(/&amp;/g, '&');
+}
 
 
 /* ===== 12_render.js ===== */
@@ -10226,22 +10300,32 @@ function renderCompare(info, cs) {
  * conversion. Anything with nothing in it is dropped: a brand with no plan
  * file sees no plan columns rather than a column of dashes.
  */
+/** The plan for the days of the running month so far: "$21,000 for 14 days". */
+function planToDate(v, r) { return money(v) + ' for ' + (r.days === 1 ? '1 day' : r.days + ' days'); }
 const YTD_COLS = {
+  /* Nov 2026: last year as a plain figure, the year on screen with its % to
+     LY under it, its ad spend beside it; the plan for the whole month, with —
+     in the running month — the plan for the days so far under it, and the %
+     to plan is against those days; the plan spend the same way. */
   sales: [
     { k: 'ly', t: 'ly', num: 1, fmt: money },
     { k: 'cur', t: 'cur', num: 1, fmt: money, big: 1 },
+    { k: 'toLy', t: '% to LY', num: 1, delta: 1, good: 1, under: 'cur' },
+    { k: 'spend', t: 'Ad spend', num: 1, fmt: money },
     { k: 'plan', t: 'Plan', num: 1, fmt: money },
+    { k: 'planCut', t: 'Plan to date', num: 1, fmt: planToDate, under: 'plan', notag: 1 },
     { k: 'toPlan', t: '% to plan', num: 1, delta: 1, good: 1, under: 'plan' },
-    { k: 'toLy', t: '% to LY', num: 1, delta: 1, good: 1, under: 'ly' },
+    { k: 'planSpend', t: 'Plan spend', num: 1, fmt: money },
+    { k: 'planSpendCut', t: 'Plan spend to date', num: 1, fmt: planToDate, under: 'planSpend', notag: 1 },
+    { k: 'tacos', t: 'TACOS', num: 1, fmt: v => pct(v, 1) },
     { k: 'units', t: 'Units', num: 1, fmt: int },
     { k: 'conv', t: 'Conversion', num: 1, fmt: v => pct(v, 1) },
-    { k: 'spend', t: 'Ad spend', num: 1, fmt: money },
-    { k: 'tacos', t: 'TACOS', num: 1, fmt: v => pct(v, 1) },
   ],
   ads: [
     { k: 'spend', t: 'Ad spend', num: 1, fmt: money, big: 1 },
     { k: 'lySpend', t: 'Ad spend LY', num: 1, fmt: money },
     { k: 'planSpend', t: 'Plan spend', num: 1, fmt: money },
+    { k: 'planSpendCut', t: 'Plan spend to date', num: 1, fmt: planToDate, under: 'planSpend', notag: 1 },
     { k: 'toPlanSpend', t: '% to plan', num: 1, delta: 1, good: 0, under: 'planSpend' },
     { k: 'brSpend', t: 'Branded spend', num: 1, fmt: money, of: 'spend' },
     { k: 'adSales', t: 'Ad revenue', num: 1, fmt: money },
@@ -10323,6 +10407,8 @@ function ytdMonths(info) {
     const lyTo = dayKey(addDays(fromKey(lp.from), daysBetween(p.from, to)));
     const ly = aggregate(DS, lp.from, lyTo > lp.to ? lp.to : lyTo);
     const plan = planFor(DS, p.from, to);
+    /* the whole month's plan, which the row shows; the plan to the cut is under it */
+    const planM = to < p.to ? planFor(DS, p.from, p.to) : plan;
     const cov = coverage(p.from, to);
 
     /* A month nobody has uploaded is not a month that sold nothing. Its own
@@ -10336,7 +10422,8 @@ function ytdMonths(info) {
       running: p.to >= today,
       days: cov, to: to,
       cur: none ? null : a.sales, ly: ly.days ? ly.sales : null,
-      plan: plan ? plan.sales : null,
+      plan: planM ? planM.sales : null,
+      planCut: to < p.to && plan ? plan.sales : null,
       toPlan: (!none && plan && plan.sales) ? deltaOf(a.sales, plan.sales) : null,
       toLy: (!none && ly.days) ? deltaOf(a.sales, ly.sales) : null,
       units: none ? null : a.units,
@@ -10346,7 +10433,8 @@ function ytdMonths(info) {
       lySpend: ly.adDays ? ly.spend : null,
       brSpend: a.brDays ? a.brSpend : null,
       adSales: a.adDays ? a.adSales : null,
-      planSpend: plan && plan.hasSpend ? plan.spend : null,
+      planSpend: planM && planM.hasSpend ? planM.spend : null,
+      planSpendCut: to < p.to && plan && plan.hasSpend ? plan.spend : null,
       /* No advertising export covering the month is not a month that spent
          nothing. Without one there is no gap to report, only a missing file. */
       toPlanSpend: (a.adDays && plan && plan.hasSpend && plan.spend)
@@ -10415,7 +10503,7 @@ function renderYtdTable(info) {
     /* a comparison under the figure it is made with (Nov 2026) */
     const subsOf = k => cols0.filter(x => x.under === k);
     const cols = cols0.filter(c => !(c.under && cols0.some(x => x.k === c.under)));
-    const one = (c, v, r) => c.delta ? arrow(v, c.good) : c.fmt(v) + (c.of ? brPct(v, r[c.of]) : '');
+    const one = (c, v, r) => c.delta ? arrow(v, c.good) : c.fmt(v, r) + (c.of ? brPct(v, r[c.of]) : '');
     document.getElementById(headEl).innerHTML =
       '<th>Month</th>' + cols.map(c => '<th>' + c.t + subsOf(c.k).map(x => hsub(x.t)).join('') + '</th>').join('');
     document.getElementById(bodyEl).innerHTML = rows.map(function (r) {
@@ -10423,7 +10511,7 @@ function renderYtdTable(info) {
         const v = r[c.k];
         return '<td class="num' + (c.big ? ' big' : '') + '">' +
           (v == null ? '—' : one(c, v, r)) +
-          subsOf(c.k).map(x => r[x.k] == null ? '' : dsub(one(x, r[x.k], r), subTag(x.t), x.t)).join('') + '</td>';
+          subsOf(c.k).map(x => r[x.k] == null ? '' : dsub(one(x, r[x.k], r), x.notag ? '' : subTag(x.t), x.t)).join('') + '</td>';
       }).join('');
       return '<tr' + (r.ahead ? ' class="ahead"' : '') + '><td>' + r.label +
         (r.part ? ' <span class="sub">' + (r.days === 1 ? '1 day' : r.days + ' days') +
@@ -10435,7 +10523,7 @@ function renderYtdTable(info) {
   /* ---- month by month: every month of the year, the ones ahead included ---- */
   const monthCols = (YTD_COLS[view.tab] || YTD_COLS.sales).map(c =>
     Object.assign({}, c, {
-      t: c.k === 'ly' ? String(+info.key - 1) : c.k === 'cur' ? info.key : c.t,
+      t: c.k === 'ly' ? String(+info.key - 1) : c.k === 'cur' ? info.key + ' revenue' : c.k === 'spend' && view.tab !== 'ads' ? info.key + ' ad spend' : c.t,
     }));
   build(monthCols, months, 'ytdHead', 'ytdRows');
 
@@ -24344,6 +24432,10 @@ async function saveToSite() {
   let ok = false;
   try {
     const body = await gzipString(JSON.stringify(DS));
+    /* the report past what the site can keep or send back: not sent (Nov 2026) */
+    if (SIZE_MODE === 'packed' && typeof CompressionStream !== 'undefined') REPORT_PACKED = body.size;
+    const tooBig = reportSizeRefusal(DS, body.size);
+    if (tooBig) throw new Error(tooBig);
     const res = await fetch('/api/save?brand=' + encodeURIComponent(BRAND || ''), {
       method: 'POST', credentials: 'same-origin', body: body,
       headers: { 'x-report-write': '1', 'x-report-gzip':
