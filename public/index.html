@@ -8936,7 +8936,7 @@ function multiChart(id, pts, series, opt) {
     const isMoney = m => m && (m.axis === axisMoney || m.fmt === money);
     series.forEach(function (s) {
       const c = cdlCol(s.m); cols.push(c); put.push([c, s.vals, s.m]); if (isMoney(s.m)) cash[c] = 1;
-      if (opt.ly && s.lvals && s.lvals.some(v => v != null)) { const c2 = cdlCol(s.m, s.m.t + ' last year'); cols.push(c2); put.push([c2, s.lvals, s.m]); if (isMoney(s.m)) cash[c2] = 1; }
+      if (opt.ly && s.lvals && s.lvals.some(v => v != null)) { const c2 = cdlCol(s.m, s.m.t + ' ' + (opt.lyName || 'last year')); cols.push(c2); put.push([c2, s.lvals, s.m]); if (isMoney(s.m)) cash[c2] = 1; }
     });
     const anyNote = pts.some(p => cdlNote(p));
     if (anyNote) cols.push('Note');
@@ -9160,7 +9160,10 @@ function renderTrendChart(info, list, avail, ly) {
 
   const pts = drawn.map(function (b, i) {
     /* on the one-year axis the month stands alone; on the two-year one it carries its year */
-    const label = info.mode === 'month' && !ly ? b.p.short + ' ' + b.key.slice(2, 4) : b.p.short;
+    const only = dayOnlyOn();
+    const shortDay = k => { const d = fromKey(k); return DMON[d.getMonth()] + ' ' + d.getDate(); };
+    const label = only ? b.p.short + (b.cmp ? ' / ' + shortDay(b.cmp) + (b.cmp.slice(0, 4) !== b.key.slice(0, 4) ? " '" + b.cmp.slice(2, 4) : '') : '')
+      : info.mode === 'month' && !ly ? b.p.short + ' ' + b.key.slice(2, 4) : b.p.short;
     const lines = [];
     series.forEach(function (s) {
       /* a month with nothing loaded has no figures — except the plan, which
@@ -9178,7 +9181,7 @@ function renderTrendChart(info, list, avail, ly) {
         const d = (ok && lv != null && !b.partial) ? deltaOf(v, lv) : null;
         lines.push('<span style="color:' + s.ink + '">●</span> ' + s.m.t + ' <b>' + (ok ? s.m.fmt(v) : '—') + '</b>' +
           (dp == null ? '' : ' <span class="sub">' + signed(dp) + '</span>') +
-          (lv == null ? '' : '<br><span class="sub">&nbsp;&nbsp;&nbsp;last year ' + s.m.fmt(lv) +
+          (lv == null ? '' : '<br><span class="sub">&nbsp;&nbsp;&nbsp;' + (only && b.cmp ? periodInfo('day', b.cmp).label : 'last year') + ' ' + s.m.fmt(lv) +
             (d == null ? '' : ' · ' + signed(d)) + '</span>'));
       }
     });
@@ -9194,7 +9197,9 @@ function renderTrendChart(info, list, avail, ly) {
     '<span><svg class="lsw" width="10" height="10" viewBox="0 0 10 10" aria-hidden="true">' +
     '<rect width="10" height="10" rx="2" style="fill:' + s.ink + '"></rect></svg>' + s.m.t +
     '<em class="axside">' + sideWord(s) + '</em></span>').join('') +
-    (ly && series.length ? '<span style="color:var(--ink-3)">paler bars and dotted lines: the same ' +
+    (dayOnlyOn() && series.length ? '<span style="color:var(--ink-3)">paler bars and dotted lines: the compare day in the same place' +
+      (dayCmpList(info).length ? ' — ' + dayListLabel(dayCmpList(info)) : ' (none picked)') + '</span>' :
+    ly && series.length ? '<span style="color:var(--ink-3)">paler bars and dotted lines: the same ' +
       (info.mode === 'week' ? 'weeks' : info.mode === 'day' ? 'weekdays' : 'months') + ' of ' + lyYear + '</span>' : '') ||
     '<span style="color:var(--ink-3)">Tick a figure to draw it.</span>';
 
@@ -9205,6 +9210,9 @@ function renderTrendChart(info, list, avail, ly) {
       : ly ? 'Trends — ' + y + ' against ' + lyYear + ', month by month'
       : mSpan === 'year' ? 'Trends — ' + y + ', month by month'
       : 'Trends — ' + lyYear + ' and ' + y + ', month by month')
+    : info.mode === 'day' && dayOnlyOn()
+    ? 'Trends — ' + (info.days ? 'the ' + info.days.length + ' days picked' : info.label) +
+      (dayCmpList(info).length ? ', against ' + dayListLabel(dayCmpList(info)) : '')
     : info.mode === 'day'
     ? 'Trends — the ' + spanFor('day') + ' days to ' + info.label + (ly ? ', against the same weekdays a year before' : '')
     : !drawn.length ? 'Trends'
@@ -9219,7 +9227,7 @@ function renderTrendChart(info, list, avail, ly) {
     '<br><br>Half-tone: still running. Ringed: the period on screen. A gap: nothing loaded.');
 
   /* the brand's chart names every deal that ran, whatever it covered */
-  multiChart('trendSvg', withDeals(pts, null), series, { ly: ly });
+  multiChart('trendSvg', withDeals(pts, null), series, { ly: ly, lyName: dayOnlyOn() ? 'compared' : null });
 }
 
 /**
@@ -9597,6 +9605,12 @@ const TWO_WHY = '<br><br>Bars on the left axis, the line on the right. Pick a si
 const ONE_WHY = '<br><br>Monthly: two calendar years on the axis. Weekly: the same week last year in orange, where loaded. Pick a second figure to draw both; click it again to drop it.';
 
 /* ---------- the buckets a chart runs over ---------- */
+/** The Daily view's chart on only the days picked, against the compare days (Nov 2026). */
+function dayOnlyOn() { return typeof view !== 'undefined' && view.mode === 'day' && !!view.dayOnly; }
+function dayCmpList(info) {
+  const ci = info && info.cmpPrev ? periodInfo('day', info.cmpPrev) : null;
+  return ci ? (ci.days ? ci.days.slice() : [ci.key]) : [];
+}
 function bucketList(info, withLy) {
   const keys = [];
   const span = spanFor(info.mode);
@@ -9624,6 +9638,17 @@ function bucketList(info, withLy) {
     }
     keys.push.apply(keys, monthSpanKeys(info.key, span));
     return monthBuckets(keys, info, 'month', true);
+  } else if (info.mode === 'day' && dayOnlyOn()) {
+    /* Nov 2026: "hocu da vidim samo njih bez ostalih dana i na chart da vidim
+       te dane uporedjenja bez obzira sto nisu isto vreme". Only the days on
+       screen, and in each slot the compare day in the same place — the first
+       picked day with the first compare day, whatever their dates. */
+    const days = info.days ? info.days.slice() : [info.key];
+    const ci = info.cmpPrev ? periodInfo('day', info.cmpPrev) : null;
+    const cd = ci ? (ci.days ? ci.days.slice() : [ci.key]) : [];
+    const list = monthBuckets(days, info, 'day', true, false);
+    list.forEach(function (b, i) { const k = cd[i]; b.cmp = k || null; b.ly = k ? aggregate(DS, k, k) : null; b.sel = false; });
+    return list;
   } else if (info.mode === 'day') {
     /* a run of days back from the one in view, every calendar day, so a day
        with nothing loaded is a gap rather than a shorter chart */
@@ -9849,10 +9874,17 @@ function renderChartPicker(avail) {
   if (sel && view.mode !== 'ytd') {
     const list = view.mode === 'week' ? WEEK_SPANS : view.mode === 'day' ? DAY_SPANS : MONTH_SPANS;
     const now = spanFor(view.mode);
+    const only = dayOnlyOn();
     sel.innerHTML = list.map(o =>
-      '<option value="' + o[0] + '"' + (o[0] === now ? ' selected' : '') + '>' +
-      o[1] + '</option>').join('');
-    sel.onchange = function () { setSpan(view.mode, sel.value); apply(); };
+      '<option value="' + o[0] + '"' + (!only && o[0] === now ? ' selected' : '') + '>' +
+      o[1] + '</option>').join('') +
+      /* the Daily view: the days on screen alone, against the compare days (Nov 2026) */
+      (view.mode === 'day' ? '<option value="picked"' + (only ? ' selected' : '') + '>Only the days picked</option>' : '');
+    sel.onchange = function () {
+      if (sel.value === 'picked') view.dayOnly = true;
+      else { view.dayOnly = false; setSpan(view.mode, sel.value); }
+      apply();
+    };
   }
 }
 
@@ -9865,7 +9897,7 @@ function renderCharts(info, cs) {
      the question a year raises is where it stands against the plan, and that
      is a number. Hidden rather than emptied, so the printed copy skips it too. */
   if (info.mode === 'ytd') { document.getElementById('trendCard').hidden = true; return; }
-  const ly = chartLyOn(view.tab);
+  const ly = dayOnlyOn() ? true : chartLyOn(view.tab);
   const list = bucketList(info, ly);
   /* everything this period could show, whether or not it is ticked */
   const avail = metricsFor(view.tab).filter(m => m.chart !== false && list.some(function (b) {
